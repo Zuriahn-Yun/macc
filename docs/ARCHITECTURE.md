@@ -1,12 +1,17 @@
 # MACC Architecture
 
-## Core Concept: Terminal Proxy
+## Core Design
 
-MACC is a terminal UI that sits between the user and AI coding agent subprocesses. The user always interacts with MACC — never directly with `claude`, `gemini`, etc. MACC manages subprocess lifecycle, proxies I/O, monitors usage, and switches agents transparently.
+MACC is a REPL-style CLI that calls AI APIs directly. It is not a wrapper around existing CLIs. This gives it exact token counts, streaming control, and the ability to compress and switch models mid-session.
 
 ```
-User input → MACC → subprocess stdin → Agent
-                                       Agent → subprocess stdout → MACC → User terminal
+User types → MACC REPL → AI Backend (Anthropic/Gemini/OpenAI SDK)
+                              ↓
+                    Streaming response to terminal
+                              ↓
+                    Token usage tracked from API response
+                              ↓
+                    At 98%: compress → switch model → continue
 ```
 
 ---
@@ -18,230 +23,225 @@ client-project/
 ├── package.json
 ├── tsconfig.json
 ├── .env.example
+├── install.sh                        # One-line curl installer
 │
 ├── src/
-│   ├── index.ts                      # CLI entry — launch MACC proxy client
+│   ├── index.ts                      # Entry point — parse args, launch REPL
 │   │
-│   ├── proxy/
-│   │   ├── agent-proxy.ts            # Core: spawn subprocess, pipe I/O, kill, respawn
-│   │   └── session-manager.ts        # Track active agent, handle switch sequence
+│   ├── repl/
+│   │   ├── session.ts                # REPL loop: readline, input handling, render
+│   │   ├── renderer.ts               # Stream response to terminal, format output
+│   │   └── commands.ts               # Slash command router (/status, /switch, etc.)
+│   │
+│   ├── backends/
+│   │   ├── base.ts                   # IModelBackend interface
+│   │   ├── anthropic.ts              # Anthropic SDK — Claude models
+│   │   ├── gemini.ts                 # Google GenAI SDK — Gemini models
+│   │   ├── openai.ts                 # OpenAI-compatible (GPT-4o, Ollama, etc.)
+│   │   └── registry.ts               # Model ID → backend mapping
 │   │
 │   ├── core/
-│   │   ├── monitor.ts                # Watch usage, emit threshold events
-│   │   ├── condenser.ts              # Condense session → HandoffPacket via Haiku
-│   │   └── history.ts                # SQLite handoff record store
-│   │
-│   ├── adapters/
-│   │   ├── base.ts                   # IAgentAdapter interface
-│   │   ├── claude-code.ts            # ClaudeCodeAdapter
-│   │   ├── gemini-cli.ts             # GeminiCliAdapter
-│   │   ├── cursor.ts                 # CursorAdapter
-│   │   ├── qoder.ts                  # QoderAdapter (stub)
-│   │   └── registry.ts               # AdapterRegistry — keyed by id/command name
-│   │
-│   ├── extractors/
-│   │   └── claude-session-reader.ts  # Parse ~/.claude/projects/**/*.jsonl
-│   │
-│   ├── ui/
-│   │   ├── app.tsx                   # Root Ink component
-│   │   ├── output-stream.tsx         # Scrollable agent output pane
-│   │   ├── status-bar.tsx            # Bottom bar: agent name, usage %, model
-│   │   └── input-line.tsx            # User input field with keybinding support
-│   │
-│   ├── commands/
-│   │   ├── status.ts                 # macc status — non-interactive usage print
-│   │   └── history.ts                # macc history — past handoffs
+│   │   ├── context-store.ts          # Conversation history + cumulative token tracking
+│   │   ├── compressor.ts             # Compress full context → HandoffPacket
+│   │   └── handoff.ts                # Orchestrate compress → switch → continue
 │   │
 │   ├── models/
-│   │   ├── session-context.ts        # SessionContext, ConversationTurn
+│   │   ├── message.ts                # Message, ConversationTurn
 │   │   ├── handoff-packet.ts         # HandoffPacket schema (zod)
-│   │   └── agent-status.ts           # UsageSnapshot schema (zod)
+│   │   └── usage.ts                  # TokenUsage, UsageSnapshot schemas (zod)
+│   │
+│   ├── commands/
+│   │   ├── config.ts                 # macc config [set key value]
+│   │   └── setup.ts                  # macc setup — first-run wizard
+│   │
+│   ├── persistence/
+│   │   ├── history.ts                # SQLite handoff_records
+│   │   └── session-store.ts          # Save/resume conversation state
 │   │
 │   └── utils/
-│       ├── platform.ts               # WSL2 ↔ Linux ↔ Mac path normalization
-│       └── config.ts                 # Load/validate ~/.macc/config.json
+│       ├── config.ts                 # Load ~/.macc/config.json
+│       ├── platform.ts               # OS detection, path helpers
+│       └── display.ts                # Terminal colors, progress bars, spinners
 │
 └── db/
-    └── schema.sql                    # SQLite DDL for handoff_records
+    └── schema.sql
 ```
 
 ---
 
-## Key Module: `proxy/agent-proxy.ts`
-
-The heart of MACC. Responsibilities:
-- Spawn the agent as a child process (`execa` or `node:child_process`)
-- Pipe user terminal input → agent stdin
-- Pipe agent stdout/stderr → MACC's output pane
-- Handle `SIGWINCH` (terminal resize) and forward to child
-- Expose `kill()` and `respawn(agent, handoffPacket)` for the session manager
+## Key Module: `backends/base.ts`
 
 ```typescript
-class AgentProxy extends EventEmitter {
-  private proc: ChildProcess | null = null;
+interface StreamChunk {
+  text: string;
+  usage?: { inputTokens: number; outputTokens: number };
+  done: boolean;
+}
 
-  async spawn(adapter: IAgentAdapter, initialPrompt?: string): Promise<void>;
-  async kill(): Promise<void>;
-  async respawn(adapter: IAgentAdapter, packet: HandoffPacket): Promise<void>;
+interface IModelBackend {
+  readonly modelId: string;
+  readonly contextWindowTokens: number;
+  readonly provider: 'anthropic' | 'google' | 'openai';
 
-  // Emits: 'output' (line), 'exit' (code), 'error' (err)
+  // Stream a response given the full conversation history
+  stream(
+    messages: Message[],
+    systemPrompt: string,
+    onChunk: (chunk: StreamChunk) => void
+  ): Promise<{ inputTokens: number; outputTokens: number }>;
+
+  // Is this model available (API key present, model ID valid)?
+  isAvailable(): Promise<boolean>;
 }
 ```
 
-**Subprocess I/O mode**: Raw PTY mode using `node-pty` so that agent output (colors, cursor movement, interactive prompts) renders correctly in the MACC terminal.
+One backend per provider. Adding a new model is one registry entry — no new backend needed if the provider is already supported.
 
 ---
 
-## Key Module: `proxy/session-manager.ts`
+## Key Module: `core/context-store.ts`
 
-Orchestrates the switch sequence:
-
-```
-[monitor emits 'threshold-crossed']
-  → sessionManager.triggerHandoff()
-    → proxy.collect last output snapshot
-    → extractor.extractSessionContext()
-    → condenser.condense(context) → HandoffPacket
-    → history.record(handoff)
-    → proxy.kill()
-    → nextAdapter = registry.getNext(currentAdapter)
-    → proxy.spawn(nextAdapter, handoffPacket.handoffPrompt)
-    → statusBar.update(nextAdapter)
-```
-
-Total switch time target: < 3 seconds (condenser call is the bottleneck).
-
----
-
-## Key Module: `IAgentAdapter` (adapters/base.ts)
+Owns the conversation history and all token tracking.
 
 ```typescript
-interface IAgentAdapter {
-  readonly id: string;
-  readonly commandName: string;        // e.g. "gemini"
-  readonly displayName: string;        // e.g. "Gemini CLI"
+class ContextStore {
+  private messages: Message[] = [];
+  private totalInputTokens = 0;
+  private totalOutputTokens = 0;
+  private contextWindowSize: number;
 
-  // Returns current usage snapshot — must be fast (file read, no API call)
-  getUsageSnapshot(): Promise<UsageSnapshot>;
+  addUserMessage(text: string): void;
+  addAssistantMessage(text: string, usage: TokenUsage): void;
 
-  // Extract full session context for condensation
-  extractSessionContext(): Promise<SessionContext | null>;
+  getUsagePercent(): number;    // (totalInputTokens / contextWindowSize) * 100
+  isNearLimit(threshold: number): boolean;
 
-  // Build the subprocess spawn args + optional initial stdin message
-  buildSpawnConfig(packet?: HandoffPacket): {
-    command: string;
-    args: string[];
-    initialStdin?: string;   // sent as first message after spawn
-    cwd: string;
-  };
-
-  isRunning(): Promise<boolean>;
-  getContextWindowSize(): number;
+  getMessages(): Message[];     // full history for next API call
+  getSnapshot(): UsageSnapshot;
 }
 ```
 
----
-
-## Key Module: `extractors/claude-session-reader.ts`
-
-Claude Code writes every turn to:
-```
-~/.claude/projects/<escaped-cwd>/<sessionId>.jsonl
-```
-
-`escaped-cwd` = `cwd.replace(/\//g, '-')`  
-Example: `/mnt/c/Users/zuria/Projects` → `-mnt-c-Users-zuria-Projects`
-
-**Active session detection**: sort `.jsonl` files by `mtime`, take newest.
-
-**JSONL entry types handled:**
-
-| `type` | Action |
-|---|---|
-| `assistant` | Extract text + tool_use blocks; read `usage.input_tokens` |
-| `user` | Extract content as ConversationTurn |
-| `last-prompt` | Store as `sessionContext.lastPrompt` |
-| `custom-title` | Store as `sessionContext.sessionTitle` |
-| `file-history-snapshot` | Keys → filesModified |
-
-**Usage accuracy**: Use `input_tokens` of the **last** assistant entry — this reflects what was actually sent to the model in that turn, not a cumulative sum.
-
-**Subagent sessions**: Nested at `<sessionId>/subagents/agent-<id>.jsonl` — aggregate their token counts into the parent session total.
+Token totals come directly from the API response `usage` field on every turn — no estimation.
 
 ---
 
-## Key Module: `condenser.ts`
+## Key Module: `core/compressor.ts`
+
+Called when usage crosses the threshold (default 98%).
 
 ```
-Input:  SessionContext
-Output: HandoffPacket (zod-validated JSON)
+Input:  ContextStore (full conversation history)
+Output: HandoffPacket
 ```
 
-Calls `claude-haiku-4-5` with structured extraction prompt. Target: < 2s round trip.
+Calls the configured compression model (default: `claude-haiku-4-5`) with a structured extraction prompt:
 
-Extracts:
-1. Ultimate goal
-2. Current task state (done / next step)
-3. Key decisions and rationale
-4. Open blockers
-5. Files of interest (path + reason: modified/read/mentioned)
-6. `handoffPrompt` — ≤500 words, ready to send as first message to next agent
+```
+You are compressing a coding session for handoff to a new AI model.
+Extract from this conversation:
+1. The user's ultimate goal (one sentence)
+2. What has been completed so far
+3. The very next step to take
+4. Key decisions made and why (bullet list)
+5. Open blockers or warnings
+6. Files created or modified (paths only)
+7. A handoff prompt (≤ 400 words) the new model should receive as its first message
+```
+
+Returns a `HandoffPacket` (validated with zod). The `handoffPrompt` field becomes the system prompt seed for the new model session.
 
 ---
 
-## UI Layout
+## Key Module: `core/handoff.ts`
 
-Built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs).
+Orchestrates the full switch sequence when threshold is hit:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  MACC                                              v0.1.0    │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  [agent output scrolls here]                                 │
-│  [agent output scrolls here]                                 │
-│  [agent output scrolls here]                                 │
-│                                                              │
-├──────────────────────────────────────────────────────────────┤
-│  Claude Code  ████████████████████░░  94%  200k ctx         │
-├──────────────────────────────────────────────────────────────┤
-│  > _                                                         │
-└──────────────────────────────────────────────────────────────┘
+1. contextStore.isNearLimit(98) → true
+
+2. Show warning in terminal:
+   "⚠  Context at 98% — 196,000 / 200,000 tokens used."
+
+3. Present model menu (from config.handoffOrder):
+   [1] Gemini 2.5 Pro  (recommended — 1M ctx)
+   [2] Claude — new session
+   [3] GPT-4o
+   [4] Stay here
+
+4. User selects → compressor.compress(contextStore) → HandoffPacket
+
+5. New ContextStore created with:
+   - Fresh message history
+   - System prompt = HandoffPacket.handoffPrompt
+   - contextWindowSize = new model's window
+
+6. history.record(handoffRecord)
+
+7. REPL continues with new backend — user sees:
+   "Switching to Gemini 2.5 Pro... done.
+    Continuing: 'Fix auth middleware JWT validation'"
 ```
 
-Components:
-- `output-stream.tsx` — scrollable output pane, renders agent stdout with ANSI colors
-- `status-bar.tsx` — agent name, usage bar, token count, model label; turns yellow at 80%, red at 95%
-- `input-line.tsx` — text input forwarded to agent stdin; captures keybindings before forwarding
+---
+
+## REPL Flow (`repl/session.ts`)
+
+```
+launch()
+  → load config
+  → resolve model backend from args or config.defaultModel
+  → initialize ContextStore
+  → print welcome header
+  → readline loop:
+      read user input
+        → if slash command: commands.handle(input)
+        → else: 
+            contextStore.addUserMessage(input)
+            renderer.beginStream()
+            backend.stream(messages, systemPrompt, onChunk)
+              → onChunk: renderer.appendChunk(text)
+              → on done: contextStore.addAssistantMessage(fullText, usage)
+            renderer.endStream()
+            display usage bar
+            if contextStore.isNearLimit(warningThreshold): warn()
+            if contextStore.isNearLimit(autoPromptThreshold): handoff.prompt()
+```
+
+---
+
+## Streaming to Terminal
+
+MACC streams token-by-token to the terminal (same as Claude Code / Gemini CLI). The renderer writes directly to `process.stdout` — no buffering.
+
+```typescript
+// renderer.ts
+function appendChunk(text: string): void {
+  process.stdout.write(text);
+}
+
+function endStream(usage: TokenUsage): void {
+  process.stdout.write('\n\n');
+  printUsageBar(usage);
+}
+```
+
+Usage bar after each response:
+```
+  Context: 47%  ████████████░░░░░░░░░░  94,000 / 200,000 tokens
+```
+Turns yellow at 90%, red at 98%.
 
 ---
 
 ## Data Models
 
-### `SessionContext`
+### `Message`
 ```typescript
-interface ConversationTurn {
-  role: 'user' | 'assistant';
+interface Message {
+  role: 'user' | 'assistant' | 'system';
   content: string;
-  toolCalls?: { name: string; input: Record<string, unknown>; result?: string }[];
   timestamp: Date;
-  tokenCount?: number;
-}
-
-interface SessionContext {
-  agentId: string;
-  sessionId: string;
-  cwd: string;
-  gitBranch?: string;
-  startedAt: Date;
-  lastActivityAt: Date;
-  turns: ConversationTurn[];
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  filesModified: string[];
-  filesRead: string[];
-  lastPrompt?: string;
-  sessionTitle?: string;
+  usage?: { inputTokens: number; outputTokens: number };
 }
 ```
 
@@ -250,33 +250,82 @@ interface SessionContext {
 interface HandoffPacket {
   version: '1';
   createdAt: string;
-  sourceAgent: string;
-  sessionId: string;
+  fromModel: string;
+  toModel: string;
   cwd: string;
   gitBranch?: string;
   summary: {
     ultimateGoal: string;
-    currentTaskState: string;
+    completedWork: string;
+    nextStep: string;
     keyDecisions: string[];
     blockers: string[];
+    filesModified: string[];
   };
-  filesOfInterest: Array<{ path: string; reason: 'modified' | 'read' | 'mentioned' }>;
-  handoffPrompt: string;   // Ready-to-use first message for the incoming agent
+  handoffPrompt: string;   // Injected as system prompt for new session
 }
 ```
 
 ### `UsageSnapshot`
 ```typescript
 interface UsageSnapshot {
-  agentId: string;
-  isRunning: boolean;
-  contextUsedPercent: number;   // 0–100
-  inputTokensLastTurn: number;
-  contextWindowSize: number;
-  nearLimit: boolean;           // > 80%
-  overLimit: boolean;           // > 95%
-  timestamp: Date;
+  modelId: string;
+  contextWindowTokens: number;
+  inputTokensUsed: number;
+  outputTokensUsed: number;
+  usagePercent: number;
+  nearLimit: boolean;    // > warningThreshold
+  overLimit: boolean;    // > autoPromptThreshold
 }
+```
+
+---
+
+## Install Script (`install.sh`)
+
+```bash
+#!/usr/bin/env bash
+set -e
+
+echo "Installing MACC..."
+
+# Require node >= 20
+node_version=$(node -v 2>/dev/null | cut -d'v' -f2 | cut -d'.' -f1)
+if [ -z "$node_version" ] || [ "$node_version" -lt 20 ]; then
+  echo "Error: Node.js 20+ required. Install from https://nodejs.org"
+  exit 1
+fi
+
+npm install -g macc
+
+echo ""
+echo "✓ MACC installed. Run: macc"
+echo "  On first run, you'll be prompted for your API keys."
+```
+
+---
+
+## First-Run Setup
+
+On first launch (no config found), MACC runs the setup wizard:
+
+```
+MACC — First-time setup
+
+Which AI provider do you want to start with?
+  [1] Anthropic (Claude) — recommended
+  [2] Google (Gemini)
+  [3] OpenAI
+
+> 1
+
+Enter your Anthropic API key (or set ANTHROPIC_API_KEY env var):
+> sk-ant-...
+
+Config saved to ~/.macc/config.json
+API key saved to ~/.macc/.env (add to your shell profile for persistence)
+
+Ready. Type `macc` to launch.
 ```
 
 ---
@@ -286,46 +335,15 @@ interface UsageSnapshot {
 | Concern | Choice |
 |---|---|
 | Language | TypeScript (Node.js 20+) |
-| Terminal UI | `ink` + `react` |
-| Subprocess PTY | `node-pty` (preserves ANSI, interactive prompts) |
-| CLI routing | `commander` |
-| AI condensation | `@anthropic-ai/sdk` (Haiku model) |
-| Session file watch | `chokidar` |
+| Anthropic API | `@anthropic-ai/sdk` |
+| Google Gemini | `@google/genai` |
+| OpenAI-compatible | `openai` SDK |
+| Terminal input | `readline` (built-in) |
+| Terminal colors | `chalk` |
 | Schema validation | `zod` |
 | SQLite history | `better-sqlite3` |
-| Config loading | `cosmiconfig` |
-
----
-
-## Config File — `~/.macc/config.json`
-
-```json
-{
-  "version": 1,
-  "defaultAgent": "claude-code",
-  "agentPriorityOrder": ["claude-code", "gemini-cli", "cursor"],
-  "agents": {
-    "claude-code": {
-      "enabled": true,
-      "warningThresholdPercent": 80,
-      "autoHandoffThresholdPercent": 95,
-      "contextWindowTokens": 200000
-    },
-    "gemini-cli": {
-      "enabled": true,
-      "warningThresholdPercent": 70,
-      "autoHandoffThresholdPercent": 90
-    },
-    "cursor": { "enabled": false },
-    "qoder": { "enabled": false }
-  },
-  "condensation": {
-    "model": "claude-haiku-4-5",
-    "maxHandoffPromptTokens": 4000
-  },
-  "historyPath": "~/.macc/handoffs/"
-}
-```
+| Config | `cosmiconfig` |
+| Packaging | `pkg` or `esbuild` → single binary |
 
 ---
 
@@ -335,27 +353,23 @@ interface UsageSnapshot {
 CREATE TABLE handoff_records (
   id           TEXT PRIMARY KEY,
   timestamp    TEXT NOT NULL,
-  from_agent   TEXT NOT NULL,
-  to_agent     TEXT NOT NULL,
-  reason       TEXT NOT NULL,  -- 'auto-threshold' | 'manual' | 'agent-offline'
-  session_id   TEXT NOT NULL,
+  from_model   TEXT NOT NULL,
+  to_model     TEXT NOT NULL,
+  reason       TEXT NOT NULL,   -- 'threshold' | 'manual'
   cwd          TEXT NOT NULL,
   packet_json  TEXT NOT NULL,
   success      INTEGER NOT NULL,
   error_msg    TEXT
 );
+
+CREATE TABLE sessions (
+  id           TEXT PRIMARY KEY,
+  started_at   TEXT NOT NULL,
+  last_active  TEXT NOT NULL,
+  model_id     TEXT NOT NULL,
+  cwd          TEXT NOT NULL,
+  messages_json TEXT NOT NULL,
+  total_input_tokens INTEGER NOT NULL,
+  total_output_tokens INTEGER NOT NULL
+);
 ```
-
----
-
-## WSL2 Path Normalization
-
-On WSL2, Claude Code uses Linux paths. `platform.ts` normalizes both forms:
-
-```
-Windows:  C:\Users\zuria\Projects\foo
-WSL:      /mnt/c/Users/zuria/Projects/foo
-Escaped:  -mnt-c-Users-zuria-Projects-foo
-```
-
-Detect WSL2 with `os.release().toLowerCase().includes('microsoft')`.

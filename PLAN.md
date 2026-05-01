@@ -1,129 +1,172 @@
 # MACC — Multi-Agent Coding Client
 
-## What It Does
+## What It Is
 
-MACC is a unified terminal client for AI coding agents. You run `macc` once and never leave it. MACC proxies your input to whichever agent is currently active (Claude Code, Gemini, Cursor, etc.), streams the output back to your terminal, and monitors usage in the background. When an agent approaches its context limit, MACC automatically condenses the session and switches to the next agent — without you changing terminals, losing context, or even noticing the switch.
+MACC is an AI coding assistant CLI — like Claude Code or Gemini CLI, but not locked to one model. You install it once and use it as your daily driver. Under the hood it calls AI APIs directly (Anthropic, Google, OpenAI-compatible), streams responses to your terminal, and tracks token usage from every response.
 
-**One client. Many agents. Seamless handoff.**
-
----
-
-## The Problem
-
-Every AI coding agent has a context window limit:
-- Claude Code: 200,000 tokens
-- Gemini CLI: 1,000,000+ tokens
-- Cursor: model-dependent
-- Qoder: varies
-
-When you hit the limit mid-task, all accumulated context is lost — the goal, the decisions, the history. The current workaround is manual: Ctrl+C, type a different agent's name, start over. MACC eliminates this entirely.
+When you hit 98% of the context window, MACC warns you, compresses the session into a compact handoff, and lets you continue in a fresh context with any supported model — same session, no lost work.
 
 ---
 
-## The Architecture: Unified Proxy Client
-
-```
-┌────────────────────────────────────────────────────────────┐
-│                     MACC Terminal UI                       │
-│                                                            │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  Conversation output (streamed from active agent)    │  │
-│  │                                                      │  │
-│  │  > You: how do I fix the auth middleware?            │  │
-│  │  > Claude: Here's what I found in middleware.ts...   │  │
-│  │                                                      │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                                                            │
-│  [Claude Code ████████████████████░ 94%]  [switch: auto]  │
-│                                                            │
-│  > Your input here_                                        │
-└────────────────────────────────────────────────────────────┘
-              │ proxy I/O              ↑ stream output
-              ▼                        │
-    ┌─────────────────┐      ┌─────────────────┐
-    │   Claude Code   │  or  │   Gemini CLI    │  or  ...
-    │   subprocess    │      │   subprocess    │
-    └─────────────────┘      └─────────────────┘
-```
-
-**Flow:**
-1. User runs `macc` — picks or defaults to active agent
-2. MACC spawns the agent as a subprocess, proxies stdin/stdout
-3. Background monitor watches agent usage (token count, rate limits)
-4. At 80%: status bar turns yellow — warning
-5. At 95%: MACC condenses context via Claude Haiku → writes HandoffPacket
-6. MACC kills current agent subprocess, spawns next agent, sends handoff prompt as first message
-7. User sees: output continues. New agent. Same terminal. No interruption.
-
----
-
-## What the User Does
+## Install & Launch
 
 ```bash
-macc          # start MACC, it picks the configured default agent
-macc gemini   # start MACC using Gemini as the first agent
+# Install globally
+npm install -g macc
+
+# Or one-line install script
+curl -fsSL https://get.macc.dev/install.sh | sh
+
+# Launch
+macc
 ```
 
-That's it. All switching is automatic. The user stays in MACC's terminal the entire time.
+It feels like Claude Code or Gemini CLI — type a message, get a streaming response, keep working.
 
 ---
 
-## Supported Agents (MVP)
+## The Experience
 
-| Agent | Subprocess I/O | Context Source | Switch Priority |
-|---|---|---|---|
-| Claude Code | stdin/stdout pipe | `~/.claude/projects/**/*.jsonl` | 1 (default) |
-| Gemini CLI | stdin/stdout pipe | `~/.gemini/` (estimated) | 2 |
-| Cursor | file injection + IDE open | `~/.cursor/` SQLite | 3 |
-| Qoder | file injection (stub) | TBD | 4 |
+```
+$ macc
+
+  MACC v0.1.0 — Multi-Agent Coding Client
+  Model: claude-sonnet-4-6  |  Context: 0%
+  Type /help for commands, Ctrl+C to exit.
+
+> Fix the auth middleware so it validates JWTs properly
+
+  I'll look at your middleware and fix the JWT validation...
+  [streams response]
+
+  Context: 12%  ████░░░░░░░░░░░░░░░░░░  24,000 / 200,000 tokens
+
+> [continues working normally...]
+
+  ⚠  Context at 98% — 196,000 / 200,000 tokens used.
+
+  Compress and continue with:
+    [1] Gemini 2.5 Pro   (1M ctx — recommended)
+    [2] Claude — new session
+    [3] GPT-4o
+    [4] Stay here (no more room)
+
+> 1
+
+  Compressing session... done (2.1s)
+  Switching to Gemini 2.5 Pro...
+
+  MACC — Gemini 2.5 Pro  |  Context: 0%
+  Continuing from previous session: "Fix auth middleware JWT validation"
+
+> [keeps working — Gemini has full context from the compressed handoff]
+```
+
+---
+
+## How It Works
+
+MACC owns the API calls — it's not wrapping another CLI. This means:
+
+1. **Token tracking is exact** — every API response includes `usage.input_tokens` and `usage.output_tokens`. MACC reads these directly.
+2. **Compression is built-in** — at 98%, MACC calls a fast cheap model (Haiku, Gemini Flash) with the full conversation and extracts a structured summary.
+3. **Handoff is seamless** — the next model starts with a compressed context prompt that contains the goal, decisions, current state, files touched, and what to do next.
+4. **Any model** — adding a new AI provider = one new backend module.
+
+---
+
+## Supported Models (MVP)
+
+| Provider | Models | Context Window |
+|---|---|---|
+| Anthropic | claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5 | 200k |
+| Google | gemini-2.5-pro, gemini-2.0-flash | 1M+ |
+| OpenAI-compatible | gpt-4o, local models (Ollama) | varies |
 
 ---
 
 ## Commands
 
 ```bash
-macc                   # Launch with default agent
-macc gemini            # Launch with specific agent
-macc status            # Show current agent + usage (non-interactive)
-macc history           # Show past handoff events
-macc config            # Open config file
+# Launch with default model (from config)
+macc
+
+# Launch with specific model
+macc --model gemini-2.5-pro
+macc --model claude-opus-4-7
+
+# Resume a previous session
+macc --resume
+
+# One-shot (non-interactive)
+macc --print "explain this codebase"
+
+# Manage config
+macc config
+macc config set default-model gemini-2.5-pro
 ```
 
-**In-session keyboard shortcuts:**
-- `Ctrl+Shift+S` — show agent status bar
-- `Ctrl+Shift+H` — trigger manual handoff now
-- `Ctrl+Shift+N` — force switch to next agent in priority list
-- `Ctrl+C` — exit MACC (and underlying agent)
+**In-session slash commands:**
+```
+/status      — show token usage breakdown
+/switch      — manually trigger model switch menu
+/compress    — compress context now without switching
+/history     — show past handoffs in this project
+/model       — change model mid-session
+/help        — all commands
+```
+
+---
+
+## Configuration
+
+`~/.macc/config.json`:
+
+```json
+{
+  "defaultModel": "claude-sonnet-4-6",
+  "warningThresholdPercent": 90,
+  "autoPromptThresholdPercent": 98,
+  "compressionModel": "claude-haiku-4-5",
+  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6", "gpt-4o"],
+  "apiKeys": {
+    "anthropic": "from ANTHROPIC_API_KEY env",
+    "google": "from GOOGLE_API_KEY env",
+    "openai": "from OPENAI_API_KEY env"
+  }
+}
+```
+
+API keys are read from environment variables — never stored in config.
 
 ---
 
 ## Implementation Phases
 
-### Phase 1 — Proxy Client MVP (Week 1–2)
-- MACC launches and proxies a single agent subprocess (Claude Code)
-- Streams agent output to terminal, forwards user input
-- Bottom status bar showing agent name + usage %
-- JSONL session reader for live token tracking
-- `macc status` command works standalone
+### Phase 1 — Working CLI (Week 1–2)
+- `macc` launches and connects to Claude (Anthropic SDK)
+- Streaming responses to terminal
+- Token tracking from API response `usage` field
+- `/status` command shows usage %
+- Warning at 98% with model switch menu
+- Basic compression via Haiku + handoff to next model
 
-### Phase 2 — Handoff Engine (Week 3–4)
-- Context condensation via Claude Haiku
-- Auto-switch at 95% threshold: kill → condense → spawn next agent with handoff prompt
-- Support Gemini CLI as second agent (stdin injection)
-- SQLite handoff history, `macc history` command
+### Phase 2 — Multi-Model + Polish (Week 3–4)
+- Google Gemini backend (`@google/genai`)
+- OpenAI-compatible backend
+- `macc --model`, `macc config` commands
+- Session persistence (continue where you left off)
+- SQLite handoff history, `/history` command
 
-### Phase 3 — Full Multi-Agent + Polish (Week 5–6)
-- Cursor and Qoder adapters
-- Config file (`~/.macc/config.json`): agent priority, thresholds, model
-- Keyboard shortcuts for manual handoff
-- WSL2 path normalization
-- Desktop notifications on auto-switch
-- `npm publish` as global `macc` CLI
+### Phase 3 — Install + Distribution (Week 5)
+- `npm publish` as `macc`
+- One-line install script (`curl | sh`)
+- First-run setup wizard (API key prompts)
+- Auto-update check on launch
+- Homebrew formula (macOS)
 
 ---
 
 ## Architecture Overview
 
-See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for full module breakdown, data models, and the proxy I/O design.
-
-See [docs/AGENTS.md](./docs/AGENTS.md) for per-agent subprocess and context injection strategies.
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — module breakdown, streaming design, compression engine, and model backend interface.
