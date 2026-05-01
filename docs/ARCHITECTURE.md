@@ -1,5 +1,16 @@
 # MACC Architecture
 
+## Core Concept: Terminal Proxy
+
+MACC is a terminal UI that sits between the user and AI coding agent subprocesses. The user always interacts with MACC — never directly with `claude`, `gemini`, etc. MACC manages subprocess lifecycle, proxies I/O, monitors usage, and switches agents transparently.
+
+```
+User input → MACC → subprocess stdin → Agent
+                                       Agent → subprocess stdout → MACC → User terminal
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -9,12 +20,16 @@ client-project/
 ├── .env.example
 │
 ├── src/
-│   ├── index.ts                      # CLI entry — commander routing
+│   ├── index.ts                      # CLI entry — launch MACC proxy client
+│   │
+│   ├── proxy/
+│   │   ├── agent-proxy.ts            # Core: spawn subprocess, pipe I/O, kill, respawn
+│   │   └── session-manager.ts        # Track active agent, handle switch sequence
 │   │
 │   ├── core/
-│   │   ├── monitor.ts                # Daemon: polls usage, emits threshold events
-│   │   ├── condenser.ts              # Calls AI to shrink session → HandoffPacket
-│   │   └── history.ts                # SQLite store of all handoff records
+│   │   ├── monitor.ts                # Watch usage, emit threshold events
+│   │   ├── condenser.ts              # Condense session → HandoffPacket via Haiku
+│   │   └── history.ts                # SQLite handoff record store
 │   │
 │   ├── adapters/
 │   │   ├── base.ts                   # IAgentAdapter interface
@@ -22,20 +37,20 @@ client-project/
 │   │   ├── gemini-cli.ts             # GeminiCliAdapter
 │   │   ├── cursor.ts                 # CursorAdapter
 │   │   ├── qoder.ts                  # QoderAdapter (stub)
-│   │   └── registry.ts               # AdapterRegistry — keyed by command name
+│   │   └── registry.ts               # AdapterRegistry — keyed by id/command name
 │   │
 │   ├── extractors/
 │   │   └── claude-session-reader.ts  # Parse ~/.claude/projects/**/*.jsonl
 │   │
-│   ├── commands/
-│   │   ├── start.ts                  # macc start — daemon
-│   │   ├── status.ts                 # macc status — usage %
-│   │   ├── handoff.ts                # macc handoff [agent] — manual trigger
-│   │   ├── install.ts                # macc install — shell wrappers
-│   │   └── history.ts                # macc history — past handoffs
+│   ├── ui/
+│   │   ├── app.tsx                   # Root Ink component
+│   │   ├── output-stream.tsx         # Scrollable agent output pane
+│   │   ├── status-bar.tsx            # Bottom bar: agent name, usage %, model
+│   │   └── input-line.tsx            # User input field with keybinding support
 │   │
-│   ├── shell/
-│   │   └── wrapper-template.sh       # Template for per-agent shell function
+│   ├── commands/
+│   │   ├── status.ts                 # macc status — non-interactive usage print
+│   │   └── history.ts                # macc history — past handoffs
 │   │
 │   ├── models/
 │   │   ├── session-context.ts        # SessionContext, ConversationTurn
@@ -44,46 +59,100 @@ client-project/
 │   │
 │   └── utils/
 │       ├── platform.ts               # WSL2 ↔ Linux ↔ Mac path normalization
-│       └── pending-store.ts          # ~/.macc/pending/<hash>.json I/O
+│       └── config.ts                 # Load/validate ~/.macc/config.json
 │
 └── db/
-    └── schema.sql                    # SQLite DDL
+    └── schema.sql                    # SQLite DDL for handoff_records
 ```
 
 ---
 
-## Key Modules
+## Key Module: `proxy/agent-proxy.ts`
 
-### `IAgentAdapter` (adapters/base.ts)
+The heart of MACC. Responsibilities:
+- Spawn the agent as a child process (`execa` or `node:child_process`)
+- Pipe user terminal input → agent stdin
+- Pipe agent stdout/stderr → MACC's output pane
+- Handle `SIGWINCH` (terminal resize) and forward to child
+- Expose `kill()` and `respawn(agent, handoffPacket)` for the session manager
+
+```typescript
+class AgentProxy extends EventEmitter {
+  private proc: ChildProcess | null = null;
+
+  async spawn(adapter: IAgentAdapter, initialPrompt?: string): Promise<void>;
+  async kill(): Promise<void>;
+  async respawn(adapter: IAgentAdapter, packet: HandoffPacket): Promise<void>;
+
+  // Emits: 'output' (line), 'exit' (code), 'error' (err)
+}
+```
+
+**Subprocess I/O mode**: Raw PTY mode using `node-pty` so that agent output (colors, cursor movement, interactive prompts) renders correctly in the MACC terminal.
+
+---
+
+## Key Module: `proxy/session-manager.ts`
+
+Orchestrates the switch sequence:
+
+```
+[monitor emits 'threshold-crossed']
+  → sessionManager.triggerHandoff()
+    → proxy.collect last output snapshot
+    → extractor.extractSessionContext()
+    → condenser.condense(context) → HandoffPacket
+    → history.record(handoff)
+    → proxy.kill()
+    → nextAdapter = registry.getNext(currentAdapter)
+    → proxy.spawn(nextAdapter, handoffPacket.handoffPrompt)
+    → statusBar.update(nextAdapter)
+```
+
+Total switch time target: < 3 seconds (condenser call is the bottleneck).
+
+---
+
+## Key Module: `IAgentAdapter` (adapters/base.ts)
 
 ```typescript
 interface IAgentAdapter {
   readonly id: string;
-  readonly commandName: string;        // matches shell wrapper name e.g. "gemini"
+  readonly commandName: string;        // e.g. "gemini"
+  readonly displayName: string;        // e.g. "Gemini CLI"
 
+  // Returns current usage snapshot — must be fast (file read, no API call)
   getUsageSnapshot(): Promise<UsageSnapshot>;
+
+  // Extract full session context for condensation
   extractSessionContext(): Promise<SessionContext | null>;
-  buildLaunchArgs(packet: HandoffPacket): { args: string[]; stdin?: string };
+
+  // Build the subprocess spawn args + optional initial stdin message
+  buildSpawnConfig(packet?: HandoffPacket): {
+    command: string;
+    args: string[];
+    initialStdin?: string;   // sent as first message after spawn
+    cwd: string;
+  };
+
   isRunning(): Promise<boolean>;
   getContextWindowSize(): number;
 }
 ```
 
-Every supported agent implements this interface. Adding a new agent = one new adapter file + one entry in the registry.
-
 ---
 
-### `claude-session-reader.ts`
+## Key Module: `extractors/claude-session-reader.ts`
 
-Claude Code writes every message turn to:
+Claude Code writes every turn to:
 ```
 ~/.claude/projects/<escaped-cwd>/<sessionId>.jsonl
 ```
 
-Where `escaped-cwd = cwd.replace(/\//g, '-')`:
-- `/mnt/c/Users/zuria/Projects` → `-mnt-c-Users-zuria-Projects`
+`escaped-cwd` = `cwd.replace(/\//g, '-')`  
+Example: `/mnt/c/Users/zuria/Projects` → `-mnt-c-Users-zuria-Projects`
 
-**Active session detection**: sort `.jsonl` files by `mtime`, take the newest.
+**Active session detection**: sort `.jsonl` files by `mtime`, take newest.
 
 **JSONL entry types handled:**
 
@@ -95,75 +164,61 @@ Where `escaped-cwd = cwd.replace(/\//g, '-')`:
 | `custom-title` | Store as `sessionContext.sessionTitle` |
 | `file-history-snapshot` | Keys → filesModified |
 
-**Tool call extraction** (from `tool_use` blocks in assistant messages):
-- `Read` input.file_path → `filesRead[]`
-- `Write` / `Edit` input.file_path → `filesModified[]`
-- `Bash` input.command → regex parse for file paths
+**Usage accuracy**: Use `input_tokens` of the **last** assistant entry — this reflects what was actually sent to the model in that turn, not a cumulative sum.
 
-**Usage accuracy**: Use `input_tokens` of the **last** assistant entry only — this is what was actually sent to the model and correctly represents current context fill.
+**Subagent sessions**: Nested at `<sessionId>/subagents/agent-<id>.jsonl` — aggregate their token counts into the parent session total.
 
 ---
 
-### `condenser.ts`
+## Key Module: `condenser.ts`
 
 ```
-Input:  SessionContext (full conversation + files + metadata)
-Output: HandoffPacket (validated JSON via zod)
+Input:  SessionContext
+Output: HandoffPacket (zod-validated JSON)
 ```
 
-Calls `claude-haiku-4-5` with a structured extraction prompt:
-1. Ultimate goal of the session
-2. Current task state (what's done, what's next)
-3. Key decisions made and why
-4. Blockers or open issues
-5. Files of interest (path + reason)
-6. Handoff prompt (≤500 words, ready to paste as first message to any agent)
+Calls `claude-haiku-4-5` with structured extraction prompt. Target: < 2s round trip.
 
-Falls back to user-configured model if Haiku is unavailable.
+Extracts:
+1. Ultimate goal
+2. Current task state (done / next step)
+3. Key decisions and rationale
+4. Open blockers
+5. Files of interest (path + reason: modified/read/mentioned)
+6. `handoffPrompt` — ≤500 words, ready to send as first message to next agent
 
 ---
 
-### `macc install` — Shell Wrapper Injection
+## UI Layout
 
-Appends to `~/.bashrc` (or `~/.zshrc`):
-
-```bash
-# --- MACC shell wrappers ---
-gemini() { macc __wrap gemini "$@"; }
-claude() { macc __wrap claude "$@"; }
-cursor() { macc __wrap cursor "$@"; }
-qoder()  { macc __wrap qoder  "$@"; }
-# --- end MACC ---
-```
-
-`macc __wrap <agent> [args]` logic:
-1. Compute `cwd-hash` = sha256 of `process.cwd()` truncated to 8 chars
-2. Check `~/.macc/pending/<hash>.json` — if exists and not expired (< 1 hour old):
-   - Read `handoffPacket.handoffPrompt`
-   - Delete the pending file
-   - Launch agent with context injected (stdin or --prompt)
-3. No pending file → `execvp(agent, args)` — transparent pass-through
-
----
-
-### `monitor.ts` — Background Daemon
+Built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs).
 
 ```
-Poll interval: 15s (configurable)
-Warning threshold: 80%  → print to daemon log
-Auto-handoff threshold: 95% → call condenser → write pending file
+┌──────────────────────────────────────────────────────────────┐
+│  MACC                                              v0.1.0    │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  [agent output scrolls here]                                 │
+│  [agent output scrolls here]                                 │
+│  [agent output scrolls here]                                 │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  Claude Code  ████████████████████░░  94%  200k ctx         │
+├──────────────────────────────────────────────────────────────┤
+│  > _                                                         │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-Uses `chokidar` to watch the active `.jsonl` file for appended lines. On each new line, re-checks the last assistant entry's `input_tokens`. This avoids full re-parse on every poll.
-
-Logs to `~/.macc/daemon.log` — never to stdout (so it doesn't pollute the user's terminal).
+Components:
+- `output-stream.tsx` — scrollable output pane, renders agent stdout with ANSI colors
+- `status-bar.tsx` — agent name, usage bar, token count, model label; turns yellow at 80%, red at 95%
+- `input-line.tsx` — text input forwarded to agent stdin; captures keybindings before forwarding
 
 ---
 
 ## Data Models
 
 ### `SessionContext`
-
 ```typescript
 interface ConversationTurn {
   role: 'user' | 'assistant';
@@ -191,11 +246,10 @@ interface SessionContext {
 ```
 
 ### `HandoffPacket`
-
 ```typescript
 interface HandoffPacket {
   version: '1';
-  createdAt: string;          // ISO timestamp
+  createdAt: string;
   sourceAgent: string;
   sessionId: string;
   cwd: string;
@@ -206,25 +260,21 @@ interface HandoffPacket {
     keyDecisions: string[];
     blockers: string[];
   };
-  filesOfInterest: Array<{
-    path: string;
-    reason: 'modified' | 'read' | 'mentioned';
-  }>;
-  handoffPrompt: string;      // Ready-to-use first message for the next agent
+  filesOfInterest: Array<{ path: string; reason: 'modified' | 'read' | 'mentioned' }>;
+  handoffPrompt: string;   // Ready-to-use first message for the incoming agent
 }
 ```
 
 ### `UsageSnapshot`
-
 ```typescript
 interface UsageSnapshot {
   agentId: string;
   isRunning: boolean;
-  contextUsedPercent: number;    // 0–100
+  contextUsedPercent: number;   // 0–100
   inputTokensLastTurn: number;
   contextWindowSize: number;
-  nearLimit: boolean;            // > 80%
-  overLimit: boolean;            // > 95%
+  nearLimit: boolean;           // > 80%
+  overLimit: boolean;           // > 95%
   timestamp: Date;
 }
 ```
@@ -236,14 +286,14 @@ interface UsageSnapshot {
 | Concern | Choice |
 |---|---|
 | Language | TypeScript (Node.js 20+) |
-| CLI framework | `commander` |
+| Terminal UI | `ink` + `react` |
+| Subprocess PTY | `node-pty` (preserves ANSI, interactive prompts) |
+| CLI routing | `commander` |
 | AI condensation | `@anthropic-ai/sdk` (Haiku model) |
-| JSONL file watch | `chokidar` |
+| Session file watch | `chokidar` |
 | Schema validation | `zod` |
 | SQLite history | `better-sqlite3` |
-| Path normalization | `node:path` + `node:os` (no extra dep) |
-| Process management | `execa` |
-| Config files | `cosmiconfig` |
+| Config loading | `cosmiconfig` |
 
 ---
 
@@ -252,8 +302,8 @@ interface UsageSnapshot {
 ```json
 {
   "version": 1,
-  "checkIntervalSeconds": 15,
-  "handoffPriorityOrder": ["gemini-cli", "claude-code", "cursor"],
+  "defaultAgent": "claude-code",
+  "agentPriorityOrder": ["claude-code", "gemini-cli", "cursor"],
   "agents": {
     "claude-code": {
       "enabled": true,
@@ -267,15 +317,13 @@ interface UsageSnapshot {
       "autoHandoffThresholdPercent": 90
     },
     "cursor": { "enabled": false },
-    "qoder":  { "enabled": false }
+    "qoder": { "enabled": false }
   },
   "condensation": {
     "model": "claude-haiku-4-5",
-    "maxHandoffPromptTokens": 4000,
-    "includeRecentTurnsCount": 5
+    "maxHandoffPromptTokens": 4000
   },
-  "historyPath": "~/.macc/handoffs/",
-  "notifications": true
+  "historyPath": "~/.macc/handoffs/"
 }
 ```
 
@@ -292,7 +340,7 @@ CREATE TABLE handoff_records (
   reason       TEXT NOT NULL,  -- 'auto-threshold' | 'manual' | 'agent-offline'
   session_id   TEXT NOT NULL,
   cwd          TEXT NOT NULL,
-  packet_json  TEXT NOT NULL,  -- HandoffPacket as JSON
+  packet_json  TEXT NOT NULL,
   success      INTEGER NOT NULL,
   error_msg    TEXT
 );
@@ -302,12 +350,12 @@ CREATE TABLE handoff_records (
 
 ## WSL2 Path Normalization
 
-On WSL2, Claude Code stores sessions using the Linux path but the user may be working from a Windows terminal.
+On WSL2, Claude Code uses Linux paths. `platform.ts` normalizes both forms:
 
 ```
-Windows path:  C:\Users\zuria\Projects\foo
-WSL path:      /mnt/c/Users/zuria/Projects/foo
-Escaped key:   -mnt-c-Users-zuria-Projects-foo
+Windows:  C:\Users\zuria\Projects\foo
+WSL:      /mnt/c/Users/zuria/Projects/foo
+Escaped:  -mnt-c-Users-zuria-Projects-foo
 ```
 
-`platform.ts` detects WSL2 via `os.release().includes('microsoft')` and normalizes both forms so MACC finds the correct project directory regardless of which terminal the user is in.
+Detect WSL2 with `os.release().toLowerCase().includes('microsoft')`.
