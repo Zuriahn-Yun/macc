@@ -1,0 +1,11 @@
+# Source — dist/ is what gets shipped
+src/
+tsconfig.json
+
+# Dev/internal files
+.claude/
+PLAN.md
+docs/
+db/
+install.sh
+*.map

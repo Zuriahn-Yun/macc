@@ -13,7 +13,7 @@ Most AI coding assistants (Claude Code, Gemini CLI, Copilot) are locked to one p
 ## Install
 
 ```bash
-npm install -g macc
+npm install -g @yunzuriahn/macc
 ```
 
 Requires Node.js 20+.

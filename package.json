@@ -1,17 +1,25 @@
 {
-  "name": "macc",
+  "name": "@yunzuriahn/macc",
   "version": "0.1.0",
   "description": "Multi-Agent Coding Client — AI coding assistant that seamlessly switches models when context limits are hit",
   "type": "module",
   "bin": {
-    "macc": "./dist/index.js"
+    "macc": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js"
   },
-  "keywords": ["ai", "coding", "cli", "claude", "gemini", "context", "handoff"],
+  "keywords": [
+    "ai",
+    "coding",
+    "cli",
+    "claude",
+    "gemini",
+    "context",
+    "handoff"
+  ],
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
