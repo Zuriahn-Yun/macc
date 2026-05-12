@@ -1,7 +1,8 @@
 import readline from 'node:readline';
 import process from 'node:process';
 import chalk from 'chalk';
-import { getBackend } from '../backends/registry.js';
+import { getBackend, detectAvailableBackend } from '../backends/registry.js';
+import { runSetupWizard } from '../commands/setup.js';
 import { ContextStore } from '../core/context-store.js';
 import { compressContext } from '../core/compressor.js';
 import { loadConfig } from '../utils/config.js';
@@ -21,14 +22,19 @@ Be concise and practical. When working with code, prefer showing changes over ex
 
 export async function startSession(initialModelId?: string): Promise<void> {
   const config = await loadConfig();
-  const modelId = initialModelId ?? config.defaultModel;
 
-  let backend = getBackend(modelId);
+  let backend: ReturnType<typeof getBackend>;
 
-  if (!(await backend.isAvailable())) {
-    console.error(chalk.red(`\n  Error: No API key found for ${modelId}.`));
-    console.error(chalk.dim(`  Set the required environment variable and try again.\n`));
-    process.exit(1);
+  if (initialModelId) {
+    backend = getBackend(initialModelId);
+    if (!(await backend.isAvailable())) {
+      console.error(chalk.red(`\n  Error: No API key found for ${initialModelId}.`));
+      console.error(chalk.dim(`  Set ANTHROPIC_API_KEY, GOOGLE_API_KEY, or OPENAI_API_KEY and try again.\n`));
+      process.exit(1);
+    }
+  } else {
+    const detected = await detectAvailableBackend();
+    backend = detected ?? await runSetupWizard();
   }
 
   let store = new ContextStore(
@@ -55,7 +61,7 @@ export async function startSession(initialModelId?: string): Promise<void> {
 
     // Slash commands
     if (input.startsWith('/')) {
-      await handleCommand(input, store, backend.modelId, config.handoffOrder);
+      await handleCommand(input, store, backend, config.handoffOrder);
       rl.prompt();
       return;
     }
@@ -92,7 +98,7 @@ export async function startSession(initialModelId?: string): Promise<void> {
       // Auto-prompt handoff at limit
       if (snapshot.overLimit) {
         printWarning(snapshot.usagePercent, snapshot.inputTokensUsed, snapshot.contextWindowTokens);
-        const result = await promptHandoff(store, backend.modelId, config.handoffOrder, rl);
+        const result = await promptHandoff(store, backend, config.handoffOrder, rl);
         if (result) {
           backend = result.backend;
           store = result.store;
@@ -116,7 +122,7 @@ export async function startSession(initialModelId?: string): Promise<void> {
 async function handleCommand(
   input: string,
   store: ContextStore,
-  modelId: string,
+  backend: ReturnType<typeof getBackend>,
   handoffOrder: string[]
 ): Promise<void> {
   const cmd = input.split(' ')[0];
@@ -129,7 +135,7 @@ async function handleCommand(
       break;
     }
     case '/model':
-      console.log(chalk.dim(`\n  Current model: ${modelId}`));
+      console.log(chalk.dim(`\n  Current model: ${backend.modelId}`));
       break;
     case '/help':
       printHelp();
@@ -144,11 +150,11 @@ async function handleCommand(
 
 async function promptHandoff(
   store: ContextStore,
-  currentModelId: string,
+  currentBackend: ReturnType<typeof getBackend>,
   handoffOrder: string[],
   rl: readline.Interface
 ): Promise<{ backend: ReturnType<typeof getBackend>; store: ContextStore } | null> {
-  const options = handoffOrder.filter(m => m !== currentModelId);
+  const options = handoffOrder.filter(m => m !== currentBackend.modelId);
   printHandoffMenu(options);
 
   return new Promise(resolve => {
@@ -167,7 +173,7 @@ async function promptHandoff(
       printHandoffStart(toModel);
 
       try {
-        const packet = await compressContext(store, currentModelId, toModel, cwd);
+        const packet = await compressContext(currentBackend, store, toModel, cwd);
         printHandoffDone(toModel, Date.now() - start);
 
         const newBackend = getBackend(toModel);

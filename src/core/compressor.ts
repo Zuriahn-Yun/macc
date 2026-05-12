@@ -1,5 +1,5 @@
-import { AnthropicBackend } from '../backends/anthropic.js';
 import { HandoffPacketSchema, type HandoffPacket } from '../models/handoff-packet.js';
+import type { IModelBackend } from '../backends/base.js';
 import type { ContextStore } from './context-store.js';
 
 const COMPRESSION_PROMPT = `You are compressing a coding session so it can continue in a new AI model with a fresh context window.
@@ -23,16 +23,21 @@ Extract from the conversation below and return ONLY valid JSON matching this exa
 }`;
 
 export async function compressContext(
+  backend: IModelBackend,
   store: ContextStore,
-  fromModel: string,
   toModel: string,
   cwd: string
 ): Promise<HandoffPacket> {
-  const compressionModel = process.env.MACC_COMPRESSION_MODEL ?? 'claude-haiku-4-5';
-  const backend = new AnthropicBackend(compressionModel);
+  const messages = store.getMessages();
+  const fromModel = backend.modelId;
 
-  const conversationText = store
-    .getMessages()
+  // Use native compression if the backend implements it
+  if (backend.compress) {
+    return backend.compress(messages, fromModel, toModel, cwd);
+  }
+
+  // Fallback: prompt the current backend with the structured extraction prompt
+  const conversationText = messages
     .filter(m => m.role !== 'system')
     .map(m => `${m.role.toUpperCase()}: ${m.content}`)
     .join('\n\n');
@@ -47,7 +52,7 @@ export async function compressContext(
   );
 
   const jsonMatch = fullResponse.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Compression model did not return valid JSON');
+  if (!jsonMatch) throw new Error('Model did not return valid JSON during compression');
 
   const parsed = JSON.parse(jsonMatch[0]);
   parsed.createdAt = new Date().toISOString();

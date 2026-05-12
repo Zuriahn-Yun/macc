@@ -19,3 +19,12 @@ export function getBackend(modelId: string): IModelBackend {
 export function listModels(): string[] {
   return Object.keys(MODEL_MAP);
 }
+
+// Returns the first backend whose API key is present, or null if none are set.
+export async function detectAvailableBackend(): Promise<IModelBackend | null> {
+  for (const factory of Object.values(MODEL_MAP)) {
+    const backend = factory();
+    if (await backend.isAvailable()) return backend;
+  }
+  return null;
+}

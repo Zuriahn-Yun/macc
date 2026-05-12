@@ -143,27 +143,29 @@ API keys are read from environment variables — never stored in config.
 
 ## Implementation Phases
 
-### Phase 1 — Working CLI (Week 1–2)
-- `macc` launches and connects to Claude (Anthropic SDK)
-- Streaming responses to terminal
-- Token tracking from API response `usage` field
-- `/status` command shows usage %
-- Warning at 98% with model switch menu
-- Basic compression via Haiku + handoff to next model
+### Phase 1 — Working CLI (Week 1–2) ✅
+- ✅ `macc` launches and connects to Claude (Anthropic SDK)
+- ✅ Streaming responses to terminal
+- ✅ Token tracking from API response `usage` field
+- ✅ `/status` command shows usage %
+- ✅ Warning at 98% with model switch menu
+- ✅ Basic compression via any available backend + handoff to next model
 
-### Phase 2 — Multi-Model + Polish (Week 3–4)
-- Google Gemini backend (`@google/genai`)
-- OpenAI-compatible backend
-- `macc --model`, `macc config` commands
-- Session persistence (continue where you left off)
-- SQLite handoff history, `/history` command
+### Phase 2 — Multi-Model + Polish (Week 3–4) 🔄
+- ✅ Google Gemini backend (`@google/genai`)
+- ✅ `macc --model` flag, `macc models` command
+- ✅ Auto-detect available backend on startup (tries env vars in order)
+- ✅ Compressor refactored to use any backend (not hardcoded to Haiku); optional native `compress()` hook on backends
+- ⬜ OpenAI-compatible backend
+- ⬜ Session persistence (continue where you left off)
+- ⬜ SQLite handoff history, `/history` command
 
-### Phase 3 — Install + Distribution (Week 5)
-- `npm publish` as `macc`
-- One-line install script (`curl | sh`)
-- First-run setup wizard (API key prompts)
-- Auto-update check on launch
-- Homebrew formula (macOS)
+### Phase 3 — Install + Distribution (Week 5) 🔄
+- ✅ First-run setup wizard (provider selection + API key prompt, persists to `~/.macc/.env`)
+- ⬜ `npm publish` as `macc`
+- ⬜ One-line install script (`curl | sh`)
+- ⬜ Auto-update check on launch
+- ⬜ Homebrew formula (macOS)
 
 ---
 
