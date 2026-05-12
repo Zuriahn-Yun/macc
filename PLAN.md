@@ -161,7 +161,10 @@ API keys are read from environment variables — never stored in config.
 - ⬜ SQLite handoff history, `/history` command
 
 ### Phase 3 — Install + Distribution (Week 5) 🔄
-- ✅ First-run setup wizard (provider selection + API key prompt, persists to `~/.macc/.env`)
+- ✅ First-run setup wizard — OAuth browser login flows (Claude CLI / gcloud), no raw API keys
+- ✅ Auth module reads credentials from provider CLI stores (`~/.claude/.credentials.json`, gcloud ADC)
+- ✅ Security: credentials never logged, local files written `0o600`, no telemetry
+- ✅ README with install, usage, handoff, security, and config docs
 - ⬜ `npm publish` as `macc`
 - ⬜ One-line install script (`curl | sh`)
 - ⬜ Auto-update check on launch

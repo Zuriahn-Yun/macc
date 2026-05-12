@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { IModelBackend, StreamChunk } from './base.js';
 import type { Message, TokenUsage } from '../models/message.js';
+import { readClaudeCredentials } from '../auth/credentials.js';
 
 const CONTEXT_WINDOWS: Record<string, number> = {
   'claude-opus-4-7':       200_000,
@@ -13,12 +14,19 @@ export class AnthropicBackend implements IModelBackend {
   readonly contextWindowTokens: number;
   readonly displayName: string;
 
-  private client: Anthropic;
-
   constructor(readonly modelId: string) {
-    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     this.contextWindowTokens = CONTEXT_WINDOWS[modelId] ?? 200_000;
     this.displayName = modelId;
+  }
+
+  private getClient(): Anthropic {
+    // Prefer Claude CLI OAuth token over raw API key
+    const creds = readClaudeCredentials();
+    if (creds) {
+      return new Anthropic({ authToken: creds.accessToken });
+    }
+    // Fallback: ANTHROPIC_API_KEY env var (set by the user manually)
+    return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
 
   async stream(
@@ -26,6 +34,7 @@ export class AnthropicBackend implements IModelBackend {
     systemPrompt: string,
     onChunk: (chunk: StreamChunk) => void
   ): Promise<TokenUsage> {
+    const client = this.getClient();
     const apiMessages = messages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
@@ -33,7 +42,7 @@ export class AnthropicBackend implements IModelBackend {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const stream = await this.client.messages.stream({
+    const stream = await client.messages.stream({
       model: this.modelId,
       max_tokens: 8096,
       system: systemPrompt,
@@ -57,6 +66,6 @@ export class AnthropicBackend implements IModelBackend {
   }
 
   async isAvailable(): Promise<boolean> {
-    return !!process.env.ANTHROPIC_API_KEY;
+    return !!(readClaudeCredentials() || process.env.ANTHROPIC_API_KEY);
   }
 }

@@ -1,21 +1,36 @@
 import readline from 'node:readline';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import chalk from 'chalk';
 import { getBackend } from '../backends/registry.js';
 import type { IModelBackend } from '../backends/base.js';
+import { readClaudeCredentials, readGcloudAccessToken, hasCliTool } from '../auth/credentials.js';
 
 interface Provider {
   label: string;
-  envVar: string;
   defaultModel: string;
+  checkAvailable: () => boolean;
+  login: () => boolean; // returns true if login succeeded
 }
 
 const PROVIDERS: Provider[] = [
-  { label: 'Anthropic (Claude)',  envVar: 'ANTHROPIC_API_KEY', defaultModel: 'claude-sonnet-4-6' },
-  { label: 'Google (Gemini)',     envVar: 'GOOGLE_API_KEY',    defaultModel: 'gemini-2.5-pro'    },
-  { label: 'OpenAI',             envVar: 'OPENAI_API_KEY',    defaultModel: 'gpt-4o'            },
+  {
+    label: 'Claude (via Claude CLI)',
+    defaultModel: 'claude-sonnet-4-6',
+    checkAvailable: () => !!readClaudeCredentials(),
+    login: loginClaude,
+  },
+  {
+    label: 'Google Gemini (via gcloud)',
+    defaultModel: 'gemini-2.5-pro',
+    checkAvailable: () => !!(readGcloudAccessToken()),
+    login: loginGoogle,
+  },
+  {
+    label: 'Qodo (coming soon)',
+    defaultModel: '',
+    checkAvailable: () => false,
+    login: () => { console.log(chalk.dim('\n  Qodo integration is coming soon.\n')); return false; },
+  },
 ];
 
 function ask(rl: readline.Interface, question: string): Promise<string> {
@@ -27,11 +42,13 @@ export async function runSetupWizard(): Promise<IModelBackend> {
 
   console.log('');
   console.log(chalk.bold('  MACC — First-time setup'));
+  console.log(chalk.dim('  No credentials found. Log in to a provider to get started.'));
   console.log('');
-  console.log('  Which AI provider do you want to start with?');
+
   PROVIDERS.forEach((p, i) => {
-    const tag = i === 0 ? chalk.dim(' — recommended') : '';
-    console.log(`    [${i + 1}] ${p.label}${tag}`);
+    const already = p.checkAvailable();
+    const status = already ? chalk.green('✓ logged in') : '';
+    console.log(`    [${i + 1}] ${p.label}  ${status}`);
   });
   console.log('');
 
@@ -46,36 +63,82 @@ export async function runSetupWizard(): Promise<IModelBackend> {
     }
   }
 
-  console.log('');
-  console.log(chalk.dim(`  Enter your ${provider.label} API key`));
-  console.log(chalk.dim(`  (or press Enter to skip and set ${provider.envVar} in your shell later)`));
-  console.log('');
-
-  const key = (await ask(rl, chalk.bold.green('  > '))).trim();
   rl.close();
 
-  if (key) {
-    process.env[provider.envVar] = key;
-    persistKey(provider.envVar, key);
-    console.log(chalk.green(`\n  Key saved to ~/.macc/.env`));
-    console.log(chalk.dim(`  Add this to your shell profile for persistence:`));
-    console.log(chalk.dim(`    export ${provider.envVar}="${key.slice(0, 8)}..."\n`));
-  } else {
-    console.log(chalk.dim(`\n  OK — set ${provider.envVar} in your shell to skip this prompt next time.\n`));
+  if (provider.defaultModel === '') {
+    // Unsupported provider selected
+    provider.login();
+    console.log(chalk.yellow('\n  Please choose a supported provider to continue.\n'));
+    return runSetupWizard();
+  }
+
+  // If already logged in, skip the login step
+  if (provider.checkAvailable()) {
+    console.log(chalk.green(`\n  Already logged in. Starting with ${provider.defaultModel}...\n`));
+    return getBackend(provider.defaultModel);
+  }
+
+  console.log('');
+  const ok = provider.login();
+  if (!ok) {
+    console.log(chalk.yellow('\n  Login was not completed. Please try again.\n'));
+    process.exit(1);
   }
 
   return getBackend(provider.defaultModel);
 }
 
-function persistKey(envVar: string, key: string): void {
-  const dir = path.join(os.homedir(), '.macc');
-  const file = path.join(dir, '.env');
-  fs.mkdirSync(dir, { recursive: true });
+// --- login helpers ---
 
-  let contents = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-  // Replace existing entry for this var, or append
-  const line = `${envVar}="${key}"`;
-  const regex = new RegExp(`^${envVar}=.*$`, 'm');
-  contents = regex.test(contents) ? contents.replace(regex, line) : contents + (contents.endsWith('\n') || !contents ? '' : '\n') + line + '\n';
-  fs.writeFileSync(file, contents, { mode: 0o600 });
+function loginClaude(): boolean {
+  if (!hasCliTool('claude')) {
+    console.log(chalk.yellow('\n  Claude CLI not found.'));
+    console.log(chalk.dim('  Install it from https://claude.ai/code, then run `claude auth login`.\n'));
+    return false;
+  }
+
+  console.log(chalk.dim('\n  Opening browser for Claude login...\n'));
+  const result = spawnSync('claude', ['auth', 'login'], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    console.log(chalk.red('\n  Claude login failed or was cancelled.\n'));
+    return false;
+  }
+
+  const creds = readClaudeCredentials();
+  if (!creds) {
+    console.log(chalk.red('\n  Login completed but no credentials were saved. Try running `claude auth login` manually.\n'));
+    return false;
+  }
+
+  console.log(chalk.green('\n  Claude login successful.\n'));
+  return true;
+}
+
+function loginGoogle(): boolean {
+  if (!hasCliTool('gcloud')) {
+    console.log(chalk.yellow('\n  gcloud CLI not found.'));
+    console.log(chalk.dim('  Install it from https://cloud.google.com/sdk, then run:'));
+    console.log(chalk.dim('    gcloud auth application-default login\n'));
+    return false;
+  }
+
+  console.log(chalk.dim('\n  Opening browser for Google login...\n'));
+
+  // Set up application default credentials
+  const result = spawnSync('gcloud', ['auth', 'application-default', 'login'], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    console.log(chalk.red('\n  Google login failed or was cancelled.\n'));
+    return false;
+  }
+
+  // Verify credentials work
+  const token = readGcloudAccessToken();
+  if (!token) {
+    console.log(chalk.red('\n  Login completed but could not read credentials. Try running `gcloud auth application-default login` manually.\n'));
+    return false;
+  }
+
+  console.log(chalk.green('\n  Google login successful.\n'));
+  console.log(chalk.dim('  Note: Set GOOGLE_CLOUD_PROJECT to your project ID to use Vertex AI.\n'));
+  return true;
 }
