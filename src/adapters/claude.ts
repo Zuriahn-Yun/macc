@@ -14,16 +14,29 @@ function escapeCwd(cwd: string): string {
   return cwd.replace(/[/\\:]/g, '-');
 }
 
-function findLatestSessionFile(cwd: string): string | null {
-  const projectDir = path.join(os.homedir(), '.claude', 'projects', escapeCwd(cwd));
-  if (!fs.existsSync(projectDir)) return null;
+// Find the most recently modified JSONL across all Claude projects.
+// When global=true (default for watch/start), ignores cwd and returns
+// whichever session was touched most recently across all projects.
+function findLatestSessionFile(cwd: string, global = false): string | null {
+  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
+  if (!fs.existsSync(projectsRoot)) return null;
 
-  const files = fs.readdirSync(projectDir)
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
+  const dirs = global
+    ? fs.readdirSync(projectsRoot).map(d => path.join(projectsRoot, d)).filter(d => fs.statSync(d).isDirectory())
+    : [path.join(projectsRoot, escapeCwd(cwd))].filter(d => fs.existsSync(d));
 
-  return files.length > 0 ? path.join(projectDir, files[0].name) : null;
+  const allFiles: { file: string; mtime: number }[] = [];
+  for (const dir of dirs) {
+    try {
+      for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'))) {
+        const fp = path.join(dir, f);
+        allFiles.push({ file: fp, mtime: fs.statSync(fp).mtimeMs });
+      }
+    } catch { /* skip unreadable dirs */ }
+  }
+
+  allFiles.sort((a, b) => b.mtime - a.mtime);
+  return allFiles.length > 0 ? allFiles[0].file : null;
 }
 
 // Extract text from a Claude content block (handles 'text' and 'thinking' block types).
@@ -112,7 +125,8 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   }
 
   async getUsageSnapshot(): Promise<UsageSnapshot> {
-    const sessionFile = findLatestSessionFile(this.cwd);
+    // Global scan: always pick the most recently active session across all projects.
+    const sessionFile = findLatestSessionFile(this.cwd, true);
     if (!sessionFile) {
       return { agentId: this.id, isRunning: false, contextUsedPercent: 0, inputTokensUsed: 0, contextWindowTokens: CONTEXT_WINDOW };
     }
@@ -125,7 +139,8 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   }
 
   async extractSessionContext(): Promise<SessionContext | null> {
-    const sessionFile = findLatestSessionFile(this.cwd);
+    // Global scan: compress the most recently active session, regardless of cwd.
+    const sessionFile = findLatestSessionFile(this.cwd, true);
     if (!sessionFile) return null;
 
     const { inputTokens, messages } = parseSessionFile(sessionFile);
