@@ -59,6 +59,50 @@ export function printSwitchBanner(modelId: string, goal: string): void {
   console.log('');
 }
 
+export function printDashboardHeader(): void {
+  console.log('');
+  console.log(chalk.bold('  MACC') + chalk.dim(' — Agent Context Monitor'));
+  console.log(chalk.dim('  Watching for context limits. Press Ctrl+C to exit.\n'));
+  console.log(chalk.dim('  Agent            Status       Context'));
+  console.log(chalk.dim('  ' + '─'.repeat(50)));
+}
+
+export function printAgentRow(
+  name: string,
+  installed: boolean,
+  running: boolean,
+  usagePercent: number,
+  inputTokens: number,
+  contextWindow: number
+): void {
+  const nameCol = name.padEnd(16);
+
+  if (!installed) {
+    console.log(chalk.dim(`  ${nameCol} not installed`));
+    return;
+  }
+
+  const statusCol = running ? chalk.green('running    ') : chalk.dim('idle       ');
+  const filled = Math.round(Math.min(usagePercent, 100) / 5);
+  const bar = '█'.repeat(filled) + '░'.repeat(20 - filled);
+  const pct = `${usagePercent.toFixed(0)}%`.padStart(4);
+
+  let contextCol: string;
+  if (usagePercent >= 98) {
+    contextCol = chalk.red(`${bar} ${pct}`);
+  } else if (usagePercent >= 90) {
+    contextCol = chalk.yellow(`${bar} ${pct}`);
+  } else {
+    contextCol = chalk.dim(`${bar} ${pct}`);
+  }
+
+  const detail = running && inputTokens > 0
+    ? chalk.dim(` (${inputTokens.toLocaleString()} / ${contextWindow.toLocaleString()})`)
+    : '';
+
+  console.log(`  ${nameCol} ${statusCol} ${contextCol}${detail}`);
+}
+
 export function printHelp(): void {
   console.log('');
   console.log(chalk.bold('  Commands:'));

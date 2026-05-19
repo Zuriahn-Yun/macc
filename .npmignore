@@ -9,3 +9,7 @@ docs/
 db/
 install.sh
 *.map
+
+# Test files — not needed at runtime
+dist/**/*.test.js
+dist/**/*.test.d.ts

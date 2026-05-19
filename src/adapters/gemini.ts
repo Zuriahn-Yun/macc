@@ -90,11 +90,8 @@ export class GeminiAdapter implements IAgentAdapter {
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {
-    // Gemini CLI reads from stdin when not interactive, treating it as the first message.
-    return { args: [], stdin: packet.handoffPrompt };
-  }
-
-  nearLimit(): boolean {
-    return true; // evaluated against contextUsedPercent >= 70 by the orchestrator
+    // `gemini "prompt"` starts an interactive session with the prompt as the first message.
+    // Fall back to stdin if the CLI doesn't support positional args.
+    return { args: [packet.handoffPrompt] };
   }
 }

@@ -105,6 +105,8 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {
-    return { args: ['--print', packet.handoffPrompt] };
+    // Pass prompt as a positional arg: `claude "prompt"` starts an interactive
+    // session with the handoff as the first message (unlike --print which exits).
+    return { args: [packet.handoffPrompt] };
   }
 }
