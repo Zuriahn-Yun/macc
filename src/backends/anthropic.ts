@@ -19,22 +19,26 @@ export class AnthropicBackend implements IModelBackend {
     this.displayName = modelId;
   }
 
-  private getClient(): Anthropic {
-    // Prefer Claude CLI OAuth token over raw API key
+  private getClient(debug = false): Anthropic {
     const creds = readClaudeCredentials();
     if (creds) {
-      return new Anthropic({ authToken: creds.accessToken });
+      if (debug) console.error('[debug] anthropic: using OAuth authToken from ~/.claude/.credentials.json');
+      // Explicitly set apiKey: null so the SDK doesn't fall back to ANTHROPIC_API_KEY env var,
+      // which would take precedence over authToken and cause auth failures.
+      return new Anthropic({ authToken: creds.accessToken, apiKey: null });
     }
-    // Fallback: ANTHROPIC_API_KEY env var (set by the user manually)
+    if (debug) console.error('[debug] anthropic: using ANTHROPIC_API_KEY env var');
     return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
 
   async stream(
     messages: Message[],
     systemPrompt: string,
-    onChunk: (chunk: StreamChunk) => void
+    onChunk: (chunk: StreamChunk) => void,
+    debug = false
   ): Promise<TokenUsage> {
-    const client = this.getClient();
+    const client = this.getClient(debug);
+    if (debug) console.error(`[debug] anthropic: streaming to model=${this.modelId} messages=${messages.length}`);
     const apiMessages = messages
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));

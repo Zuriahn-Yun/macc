@@ -16,7 +16,8 @@ export interface IModelBackend {
   stream(
     messages: Message[],
     systemPrompt: string,
-    onChunk: (chunk: StreamChunk) => void
+    onChunk: (chunk: StreamChunk) => void,
+    debug?: boolean
   ): Promise<TokenUsage>;
 
   isAvailable(): Promise<boolean>;

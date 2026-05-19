@@ -24,19 +24,26 @@ export class GeminiBackend implements IModelBackend {
     this.displayName = modelId;
   }
 
-  private getClient(): { client: GoogleGenAI; vertexMode: boolean } {
-    // Prefer gcloud ADC (Vertex AI) over raw API key
+  private getClient(debug = false): { client: GoogleGenAI; vertexMode: boolean } {
     const project = process.env.GOOGLE_CLOUD_PROJECT ?? process.env.GCLOUD_PROJECT;
     const location = process.env.GOOGLE_CLOUD_LOCATION ?? 'us-central1';
 
     if (project) {
+      // Fetch a fresh ADC access token and inject it as a bearer header so
+      // Vertex AI requests are authenticated even without GOOGLE_API_KEY.
+      const accessToken = readGcloudAccessToken();
+      if (debug) console.error(`[debug] gemini: vertexMode project=${project} hasToken=${!!accessToken}`);
+      const httpOptions = accessToken
+        ? { headers: { Authorization: `Bearer ${accessToken}` } }
+        : undefined;
       return {
-        client: new GoogleGenAI({ vertexai: true, project, location }),
+        client: new GoogleGenAI({ vertexai: true, project, location, httpOptions }),
         vertexMode: true,
       };
     }
 
     // Fallback: GOOGLE_API_KEY env var (AI Studio key)
+    if (debug) console.error('[debug] gemini: using GOOGLE_API_KEY');
     return {
       client: new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY ?? '' }),
       vertexMode: false,
@@ -46,9 +53,11 @@ export class GeminiBackend implements IModelBackend {
   async stream(
     messages: Message[],
     systemPrompt: string,
-    onChunk: (chunk: StreamChunk) => void
+    onChunk: (chunk: StreamChunk) => void,
+    debug = false
   ): Promise<TokenUsage> {
-    const { client } = this.getClient();
+    const { client } = this.getClient(debug);
+    if (debug) console.error(`[debug] gemini: streaming to model=${this.modelId} messages=${messages.length}`);
 
     const history = messages
       .filter(m => m.role !== 'system')

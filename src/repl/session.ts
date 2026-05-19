@@ -20,7 +20,7 @@ import {
 const SYSTEM_PROMPT = `You are a helpful AI coding assistant. You help users write, debug, and understand code.
 Be concise and practical. When working with code, prefer showing changes over explaining them.`;
 
-export async function startSession(initialModelId?: string): Promise<void> {
+export async function startSession(initialModelId?: string, debug = false): Promise<void> {
   const config = await loadConfig();
 
   let backend: ReturnType<typeof getBackend>;
@@ -61,7 +61,7 @@ export async function startSession(initialModelId?: string): Promise<void> {
 
     // Slash commands
     if (input.startsWith('/')) {
-      await handleCommand(input, store, backend, config.handoffOrder);
+      await handleCommand(input, store, backend, config.handoffOrder, rl, (b, s) => { backend = b; store = s; });
       rl.prompt();
       return;
     }
@@ -81,7 +81,8 @@ export async function startSession(initialModelId?: string): Promise<void> {
             process.stdout.write(chunk.text);
             fullResponse += chunk.text;
           }
-        }
+        },
+        debug
       );
 
       store.addAssistantMessage(fullResponse, usage);
@@ -105,8 +106,12 @@ export async function startSession(initialModelId?: string): Promise<void> {
         }
       }
     } catch (err: unknown) {
+      if (debug) console.error('[debug] stream error:', err);
       const message = err instanceof Error ? err.message : String(err);
-      console.error(chalk.red(`\n  Error: ${message}`));
+      // Surface HTTP status if present (Anthropic SDK error shape)
+      const status = (err as { status?: number })?.status;
+      const statusStr = status ? ` (HTTP ${status})` : '';
+      console.error(chalk.red(`\n  Error${statusStr}: ${message}`));
     }
 
     rl.resume();
@@ -123,7 +128,9 @@ async function handleCommand(
   input: string,
   store: ContextStore,
   backend: ReturnType<typeof getBackend>,
-  handoffOrder: string[]
+  handoffOrder: string[],
+  rl: readline.Interface,
+  onSwitch: (b: ReturnType<typeof getBackend>, s: ContextStore) => void
 ): Promise<void> {
   const cmd = input.split(' ')[0];
   switch (cmd) {
@@ -140,9 +147,11 @@ async function handleCommand(
     case '/help':
       printHelp();
       break;
-    case '/switch':
-      console.log(chalk.dim('\n  Use /switch to manually trigger handoff — not yet implemented in MVP.'));
+    case '/switch': {
+      const result = await promptHandoff(store, backend, handoffOrder, rl);
+      if (result) onSwitch(result.backend, result.store);
       break;
+    }
     default:
       console.log(chalk.dim(`\n  Unknown command: ${cmd}. Type /help for available commands.`));
   }
