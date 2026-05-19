@@ -1,6 +1,6 @@
 {
   "name": "@yunzuriahn/macc",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Multi-Agent Coding Client — AI coding assistant that seamlessly switches models when context limits are hit",
   "type": "module",
   "bin": {

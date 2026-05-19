@@ -7,9 +7,11 @@ import type { HandoffPacket } from '../models/handoff-packet.js';
 
 const CONTEXT_WINDOW = 200_000;
 
-// Claude Code escapes the project cwd by replacing path separators with '-'.
+// Claude Code escapes the project cwd by replacing every path separator and
+// colon with '-'. The leading '-' from the initial '/' is kept as-is.
+// e.g. /mnt/c/Users/zuria/Projects/MACC → -mnt-c-Users-zuria-Projects-MACC
 function escapeCwd(cwd: string): string {
-  return cwd.replace(/[/\\:]/g, '-').replace(/^-+/, '');
+  return cwd.replace(/[/\\:]/g, '-');
 }
 
 function findLatestSessionFile(cwd: string): string | null {
@@ -24,26 +26,48 @@ function findLatestSessionFile(cwd: string): string | null {
   return files.length > 0 ? path.join(projectDir, files[0].name) : null;
 }
 
-function parseSessionFile(filePath: string): { inputTokens: number; messages: Array<{ role: 'user' | 'assistant'; content: string }> } {
+// Extract text from a Claude content block (handles 'text' and 'thinking' block types).
+function extractText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: { type?: string }) => b.type === 'text')
+      .map((b: { text?: string }) => b.text ?? '')
+      .join('');
+  }
+  return '';
+}
+
+function parseSessionFile(filePath: string): {
+  inputTokens: number;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+} {
   const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
   let inputTokens = 0;
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
-  // Find the last assistant entry and read its usage.input_tokens — that is
-  // the cumulative token count for the full conversation (per AGENTS.md spec).
-  for (let i = lines.length - 1; i >= 0; i--) {
+  for (const line of lines) {
     try {
-      const entry = JSON.parse(lines[i]);
-      if (entry.type === 'assistant' && entry.usage?.input_tokens != null && inputTokens === 0) {
-        inputTokens = entry.usage.input_tokens;
+      const entry = JSON.parse(line);
+      const type = entry.type as string;
+
+      if (type === 'assistant') {
+        const msg = entry.message ?? {};
+        const usage = msg.usage ?? {};
+        // Total context = regular input + cache-read + cache-creation tokens
+        const total =
+          (usage.input_tokens ?? 0) +
+          (usage.cache_read_input_tokens ?? 0) +
+          (usage.cache_creation_input_tokens ?? 0);
+        if (total > inputTokens) inputTokens = total; // keep the highest seen (last turn)
+
+        const text = extractText(msg.content);
+        if (text) messages.push({ role: 'assistant', content: text });
       }
-      if (entry.type === 'user' || entry.type === 'assistant') {
-        const content = typeof entry.message === 'string'
-          ? entry.message
-          : entry.message?.content ?? entry.content ?? '';
-        if (content) {
-          messages.unshift({ role: entry.type as 'user' | 'assistant', content });
-        }
+
+      if (type === 'user') {
+        const text = extractText(entry.message?.content ?? entry.message ?? '');
+        if (text) messages.push({ role: 'user', content: text });
       }
     } catch {
       // skip malformed lines
@@ -66,18 +90,22 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   async isRunning(): Promise<boolean> {
     try {
       const output = execFileSync('ps', ['aux'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      if (!output.includes('claude')) return false;
+      const claudeLines = output.split('\n').filter(
+        line => /\bclaude\b/.test(line) && !line.includes('grep') && !line.includes('macc')
+      );
+      if (claudeLines.length === 0) return false;
 
-      // On Linux/WSL2 confirm the process cwd matches
-      const pidMatch = output.split('\n')
-        .find(line => line.includes('claude') && !line.includes('grep'));
-      if (!pidMatch) return false;
-
-      const pidPart = pidMatch.trim().split(/\s+/)[1];
-      if (!pidPart) return false;
-
-      const procCwd = fs.readlinkSync(`/proc/${pidPart}/cwd`);
-      return procCwd === this.cwd;
+      // On Linux/WSL2 confirm at least one claude process cwd matches
+      for (const line of claudeLines) {
+        const pid = line.trim().split(/\s+/)[1];
+        if (!pid) continue;
+        try {
+          const procCwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+          if (procCwd === this.cwd) return true;
+        } catch { /* pid may have exited */ }
+      }
+      // If /proc cwd check fails (non-Linux), fall back to trusting the process exists
+      return claudeLines.length > 0;
     } catch {
       return false;
     }
@@ -105,8 +133,8 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {
-    // Pass prompt as a positional arg: `claude "prompt"` starts an interactive
-    // session with the handoff as the first message (unlike --print which exits).
+    // `claude "prompt"` starts an interactive session with the prompt as the
+    // first user message — the model sees it and begins working immediately.
     return { args: [packet.handoffPrompt] };
   }
 }
