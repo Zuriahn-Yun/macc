@@ -15,8 +15,7 @@ import {
   printAgentRow,
 } from '../utils/display.js';
 
-const POLL_INTERVAL_MS = 5_000;        // how often to sample context internally
-const DASHBOARD_REFRESH_MS = 120_000;  // how often to reprint the status table (2 min)
+const POLL_INTERVAL_MS = 5_000; // how often to sample context in the background
 
 // ---------------------------------------------------------------------------
 // Compact status table — printed at the top of the terminal before handing
@@ -75,22 +74,16 @@ export async function runWithRotation(
   // Spawn the agent with the full terminal handed to it.
   const child = spawn(agent.commandName, launchArgs, { stdio: 'inherit' });
 
-  // Poll context in the background while the user works.
+  // Poll context silently in the background — never write to stdout while
+  // the agent owns the terminal, it would corrupt the agent's UI.
   let lastSnapshot = await agent.getUsageSnapshot().catch(() => null);
   const monitor = setInterval(async () => {
     lastSnapshot = await agent.getUsageSnapshot().catch(() => lastSnapshot);
   }, POLL_INTERVAL_MS);
 
-  // Reprint the status table every 2 minutes (the agent owns the terminal, so
-  // this will appear between turns when there's no active output).
-  const dashTimer = setInterval(async () => {
-    await printStatusTable(agent, targets);
-  }, DASHBOARD_REFRESH_MS);
-
   // Wait for the user to exit the agent (Ctrl+C, /exit, etc.)
   await new Promise<void>(resolve => child.on('close', resolve));
   clearInterval(monitor);
-  clearInterval(dashTimer);
 
   // Re-read context after exit for accuracy.
   const snap = await agent.getUsageSnapshot().catch(() => lastSnapshot);
@@ -98,17 +91,18 @@ export async function runWithRotation(
 
   console.log(''); // newline after agent's terminal output
 
-  if (pct < 70 || targets.length === 0) {
+  if (pct > 0) {
+    console.log(chalk.dim(`  Session ended. Context was at ${pct.toFixed(0)}%.`));
+  }
+
+  if (pct < 85 || targets.length === 0) {
     // Not near the limit — no rotation needed.
-    if (pct > 0) {
-      console.log(chalk.dim(`  Session ended. Context was at ${pct.toFixed(0)}%.`));
-    }
     return;
   }
 
   // Context was high — offer to rotate.
   printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
-  console.log(chalk.dim('  Session ended. Rotate to another agent to continue?\n'));
+  console.log(chalk.dim('  Rotate to another agent to continue?\n'));
 
   printHandoffMenu(targets.map(t => t.id));
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
