@@ -152,15 +152,12 @@ describe('buildLaunchArgs per adapter', () => {
     expect(args[0]).toContain('auth middleware');
   });
 
-  it('qodo writes handoff to ~/.macc/ and returns file path as arg', async () => {
-    const fs = await import('node:fs');
+  it('qodo (qodercli) passes handoff prompt as positional arg', async () => {
     const { QodoAdapter } = await import('../adapters/qodo.js');
-    const adapter = new QodoAdapter();
+    const adapter = new QodoAdapter('/project');
     const packet = JSON.parse(VALID_PACKET_JSON);
     const { args } = adapter.buildLaunchArgs(packet);
-    expect(args[0]).toMatch(/\.macc\/handoff-.+\.md$/);
-    expect(fs.existsSync(args[0])).toBe(true);
-    // Clean up
-    fs.unlinkSync(args[0]);
+    expect(args[0]).toContain('auth middleware');
+    expect(args).not.toContain('--print');
   });
 });

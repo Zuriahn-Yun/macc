@@ -5,47 +5,105 @@ import { execFileSync } from 'node:child_process';
 import type { IAgentAdapter, SessionContext, UsageSnapshot, LaunchArgs } from './base.js';
 import type { HandoffPacket } from '../models/handoff-packet.js';
 
-// Gemini CLI's context window (Gemini 2.5 Pro).
+// Gemini 2.5 Pro context window
 const CONTEXT_WINDOW = 1_048_576;
-// Gemini CLI doesn't always expose exact token counts; treat 70% as the trigger.
-const ESTIMATED_LIMIT_FRACTION = 0.7;
 
+// Sessions live at ~/.gemini/tmp/<project-hash>/chats/session-*.jsonl
+// The project hash is an opaque short ID maintained by Gemini CLI's registry,
+// so we do a global scan and pick the most-recently modified file.
 function findLatestGeminiSession(): string | null {
-  const geminiDir = path.join(os.homedir(), '.gemini');
-  if (!fs.existsSync(geminiDir)) return null;
+  const chatsGlob = path.join(os.homedir(), '.gemini', 'tmp');
+  if (!fs.existsSync(chatsGlob)) return null;
 
-  const files = fs.readdirSync(geminiDir)
-    .filter(f => f.endsWith('.json'))
-    .map(f => ({ name: f, mtime: fs.statSync(path.join(geminiDir, f)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
+  const allFiles: { file: string; mtime: number }[] = [];
 
-  return files.length > 0 ? path.join(geminiDir, files[0].name) : null;
-}
-
-function estimateTokens(messages: Array<{ role: string; content: string }>): number {
-  // Rough estimate: ~1.3 tokens per character of content
-  const chars = messages.reduce((sum, m) => sum + m.content.length, 0);
-  return Math.round(chars * 1.3);
-}
-
-function parseGeminiSession(filePath: string): Array<{ role: 'user' | 'assistant'; content: string }> {
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    const turns: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-
-    // Gemini CLI session format is still evolving — handle known structures gracefully.
-    const entries = Array.isArray(raw) ? raw : (raw.messages ?? raw.history ?? []);
-    for (const entry of entries) {
-      const role = entry.role === 'model' ? 'assistant' : (entry.role ?? 'user');
-      const content = typeof entry.content === 'string'
-        ? entry.content
-        : entry.parts?.map((p: { text?: string }) => p.text ?? '').join('') ?? '';
-      if (content) turns.push({ role: role as 'user' | 'assistant', content });
+    for (const hash of fs.readdirSync(chatsGlob)) {
+      const chatsDir = path.join(chatsGlob, hash, 'chats');
+      if (!fs.existsSync(chatsDir)) continue;
+      for (const f of fs.readdirSync(chatsDir)) {
+        if (!f.startsWith('session-') || !f.match(/\.jsonl?$/)) continue;
+        const fp = path.join(chatsDir, f);
+        try {
+          allFiles.push({ file: fp, mtime: fs.statSync(fp).mtimeMs });
+        } catch { /* skip */ }
+      }
     }
-    return turns;
-  } catch {
-    return [];
+  } catch { /* ~/.gemini/tmp not readable */ }
+
+  allFiles.sort((a, b) => b.mtime - a.mtime);
+  return allFiles.length > 0 ? allFiles[0].file : null;
+}
+
+// Extract readable text from a Gemini PartListUnion content value.
+// Parts can be: { text }, { functionCall: { name, args } }, { functionResponse: { name, response } }
+function extractGeminiContent(content: unknown): string {
+  if (!content) return '';
+  const parts = Array.isArray(content) ? content : [content];
+  const out: string[] = [];
+
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    const p = part as Record<string, unknown>;
+
+    if (typeof p.text === 'string' && p.text) {
+      out.push(p.text);
+    } else if (p.functionCall && typeof p.functionCall === 'object') {
+      const fc = p.functionCall as Record<string, unknown>;
+      const args = fc.args ? JSON.stringify(fc.args).slice(0, 400) : '';
+      out.push(`[Tool: ${fc.name}(${args})]`);
+    } else if (p.functionResponse && typeof p.functionResponse === 'object') {
+      const fr = p.functionResponse as Record<string, unknown>;
+      const resp = fr.response ? JSON.stringify(fr.response).slice(0, 600) : '';
+      out.push(`[Result: ${resp}]`);
+    }
   }
+  return out.join('\n');
+}
+
+// Gemini CLI JSONL format (from chatRecordingTypes.ts):
+// Each line is a MessageRecord:
+//   { id, timestamp, content: PartListUnion, type: 'user'|'gemini'|'info'|'error'|'warning', ... }
+// Gemini-type messages also carry: tokens?: { input, output, cached, total }
+function parseGeminiSession(filePath: string): {
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  totalTokens: number;
+} {
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  let totalTokens = 0;
+
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+  for (const line of lines) {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+
+      // Skip metadata/rewind records
+      if ('$set' in record || '$rewindTo' in record) continue;
+
+      const type = record.type as string;
+      const content = extractGeminiContent(record.content);
+
+      if (type === 'user' && content) {
+        messages.push({ role: 'user', content });
+      } else if (type === 'gemini') {
+        if (content) messages.push({ role: 'assistant', content });
+        // Use real token counts when available
+        const tokens = record.tokens as Record<string, number> | null | undefined;
+        if (tokens?.total && tokens.total > totalTokens) {
+          totalTokens = tokens.total;
+        }
+      }
+      // skip 'info', 'error', 'warning' — not useful for compression
+    } catch { /* skip malformed lines */ }
+  }
+
+  // Fall back to character-based estimation if token counts were not recorded
+  if (totalTokens === 0 && messages.length > 0) {
+    const chars = messages.reduce((s, m) => s + m.content.length, 0);
+    totalTokens = Math.round(chars * 1.3);
+  }
+
+  return { messages, totalTokens };
 }
 
 export class GeminiAdapter implements IAgentAdapter {
@@ -59,7 +117,7 @@ export class GeminiAdapter implements IAgentAdapter {
   async isRunning(): Promise<boolean> {
     try {
       const output = execFileSync('ps', ['aux'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      return output.split('\n').some(line => /\bgemini\b/.test(line) && !line.includes('grep'));
+      return output.split('\n').some(line => /\bgemini\b/.test(line) && !line.includes('grep') && !line.includes('macc'));
     } catch {
       return false;
     }
@@ -70,28 +128,25 @@ export class GeminiAdapter implements IAgentAdapter {
     if (!sessionFile) {
       return { agentId: this.id, isRunning: false, contextUsedPercent: 0, inputTokensUsed: 0, contextWindowTokens: CONTEXT_WINDOW };
     }
-
-    const messages = parseGeminiSession(sessionFile);
-    const estimated = estimateTokens(messages);
+    const { totalTokens } = parseGeminiSession(sessionFile);
     const isRunning = await this.isRunning();
-    // Scale the estimate so that a full 1M context = ESTIMATED_LIMIT_FRACTION on our scale.
-    const contextUsedPercent = (estimated / CONTEXT_WINDOW) * 100;
-
-    return { agentId: this.id, isRunning, contextUsedPercent, inputTokensUsed: estimated, contextWindowTokens: CONTEXT_WINDOW };
+    return {
+      agentId: this.id,
+      isRunning,
+      contextUsedPercent: (totalTokens / CONTEXT_WINDOW) * 100,
+      inputTokensUsed: totalTokens,
+      contextWindowTokens: CONTEXT_WINDOW,
+    };
   }
 
   async extractSessionContext(): Promise<SessionContext | null> {
     const sessionFile = findLatestGeminiSession();
     if (!sessionFile) return null;
-
-    const messages = parseGeminiSession(sessionFile);
-    const estimated = estimateTokens(messages);
-    return { messages, cwd: process.cwd(), inputTokensUsed: estimated, contextWindowTokens: CONTEXT_WINDOW };
+    const { messages, totalTokens } = parseGeminiSession(sessionFile);
+    return { messages, cwd: process.cwd(), inputTokensUsed: totalTokens, contextWindowTokens: CONTEXT_WINDOW };
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {
-    // `gemini "prompt"` starts an interactive session with the prompt as the first message.
-    // Fall back to stdin if the CLI doesn't support positional args.
     return { args: [packet.handoffPrompt] };
   }
 }
