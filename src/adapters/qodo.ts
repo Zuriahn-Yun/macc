@@ -82,7 +82,7 @@ function parseQoderSession(filePath: string): {
 }
 
 export class QodoAdapter implements IAgentAdapter {
-  readonly id = 'qodo';
+  readonly id = 'qodercli';
   readonly commandName = 'qodercli';
 
   constructor(private readonly cwd = process.cwd()) {}

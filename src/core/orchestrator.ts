@@ -83,7 +83,9 @@ export async function runWithRotation(
   if (handoffPrompt) {
     console.log(chalk.dim('  Session context loaded from previous agent.\n'));
   } else {
-    console.log(chalk.dim('  MACC is watching. Exit agent to switch, or run "macc switch" anytime.\n'));
+    console.log(chalk.dim('  To switch agents at any time:'));
+    console.log(chalk.dim('    • Exit the agent normally (Ctrl+C or /exit) — MACC will ask where to go next'));
+    console.log(chalk.dim('    • Or run ') + chalk.bold.white('macc switch') + chalk.dim(' in another terminal to switch immediately\n'));
   }
 
   // Print the status table once before handing off the terminal.

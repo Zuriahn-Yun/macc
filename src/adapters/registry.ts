@@ -6,7 +6,7 @@ import { CodexAdapter } from './codex.js';
 import { GenericAgentAdapter, loadCustomAgents } from './generic.js';
 import type { IAgentAdapter } from './base.js';
 
-export const ALL_AGENT_IDS = ['claude-code', 'gemini-cli', 'qodo', 'codex'] as const;
+export const ALL_AGENT_IDS = ['claude-code', 'gemini-cli', 'qodercli', 'codex'] as const;
 
 export interface AgentInfo {
   adapter: IAgentAdapter;
