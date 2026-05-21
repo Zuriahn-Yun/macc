@@ -68,20 +68,42 @@ function makeBackend(): IModelBackend {
 // ---------------------------------------------------------------------------
 
 describe('rotation threshold logic', () => {
-  it('does not offer rotation when context < 85%', async () => {
+  it('switch menu is always offered regardless of context %', async () => {
+    // Previously rotation was blocked under 85%; now we always offer the menu.
     const source = makeAdapter('claude-code', 70, [{ role: 'user', content: 'hello' }]);
-    const target = makeAdapter('gemini-cli', 0);
-
-    // At 70% context, rotation should not be triggered.
     const snap = await source.getUsageSnapshot();
+    // Low context — switch is still offered (user decides, not MACC)
     expect(snap.contextUsedPercent).toBe(70);
-    expect(snap.contextUsedPercent < 85).toBe(true); // no rotation
+    expect(snap.contextUsedPercent < 85).toBe(true);
+    // The menu should be shown regardless (tested via display function)
   });
 
-  it('offers rotation when context >= 85%', async () => {
+  it('warning is shown when context >= 85%', async () => {
     const source = makeAdapter('claude-code', 92, [{ role: 'user', content: 'fix auth' }]);
     const snap = await source.getUsageSnapshot();
-    expect(snap.contextUsedPercent >= 85).toBe(true); // rotation offered
+    expect(snap.contextUsedPercent >= 85).toBe(true);
+  });
+});
+
+describe('manual switch — buildBaseArgs', () => {
+  it('claude-code buildBaseArgs includes --append-system-prompt', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const args = adapter.buildBaseArgs();
+    expect(args[0]).toBe('--append-system-prompt');
+    expect(args[1]).toBeTruthy();
+    expect(args).toHaveLength(2);
+  });
+
+  it('base args are prepended before handoff prompt in launch args', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const baseArgs = adapter.buildBaseArgs();
+    const handoffPrompt = 'Continue with auth middleware.';
+    // Simulate what orchestrator does
+    const launchArgs = [...baseArgs, handoffPrompt];
+    expect(launchArgs[0]).toBe('--append-system-prompt');
+    expect(launchArgs[launchArgs.length - 1]).toBe(handoffPrompt);
   });
 });
 

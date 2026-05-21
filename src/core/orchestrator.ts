@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import chalk from 'chalk';
 import type { IAgentAdapter } from '../adapters/base.js';
 import type { IModelBackend } from '../backends/base.js';
@@ -15,7 +18,20 @@ import {
   printAgentRow,
 } from '../utils/display.js';
 
-const POLL_INTERVAL_MS = 5_000; // how often to sample context in the background
+const POLL_INTERVAL_MS = 5_000;
+const MACC_DIR = path.join(os.homedir(), '.macc');
+const PID_FILE = path.join(MACC_DIR, 'running.pid');
+
+function writePid(): void {
+  try {
+    fs.mkdirSync(MACC_DIR, { recursive: true });
+    fs.writeFileSync(PID_FILE, String(process.pid));
+  } catch { /* non-fatal */ }
+}
+
+function clearPid(): void {
+  try { fs.unlinkSync(PID_FILE); } catch { /* already gone */ }
+}
 
 // ---------------------------------------------------------------------------
 // Compact status table — printed at the top of the terminal before handing
@@ -56,16 +72,18 @@ export async function runWithRotation(
   compressBackend: IModelBackend,
   handoffPrompt?: string // set when continuing from a previous agent
 ): Promise<void> {
-  // Build launch args: if this is a continuation, inject the handoff prompt
+  // Build launch args: base flags (e.g. --append-system-prompt) always present;
+  // handoff prompt appended as positional arg when continuing from another agent.
+  const baseArgs = agent.buildBaseArgs?.() ?? [];
   const launchArgs = handoffPrompt
-    ? [handoffPrompt]
-    : [];
+    ? [...baseArgs, handoffPrompt]
+    : baseArgs;
 
   console.log(chalk.bold(`\n  Starting ${agent.commandName}...`));
   if (handoffPrompt) {
     console.log(chalk.dim('  Session context loaded from previous agent.\n'));
   } else {
-    console.log(chalk.dim('  MACC is watching context. When you exit, it will offer to rotate.\n'));
+    console.log(chalk.dim('  MACC is watching. Exit agent to switch, or run "macc switch" anytime.\n'));
   }
 
   // Print the status table once before handing off the terminal.
@@ -74,6 +92,16 @@ export async function runWithRotation(
   // Spawn the agent with the full terminal handed to it.
   const child = spawn(agent.commandName, launchArgs, { stdio: 'inherit' });
 
+  // SIGUSR1 = manual switch request from "macc switch" command.
+  // Kill the child so we regain the terminal and can show the menu.
+  let forceSwitch = false;
+  writePid();
+  const sigusr1Handler = () => {
+    forceSwitch = true;
+    child.kill('SIGTERM');
+  };
+  process.once('SIGUSR1', sigusr1Handler);
+
   // Poll context silently in the background — never write to stdout while
   // the agent owns the terminal, it would corrupt the agent's UI.
   let lastSnapshot = await agent.getUsageSnapshot().catch(() => null);
@@ -81,9 +109,11 @@ export async function runWithRotation(
     lastSnapshot = await agent.getUsageSnapshot().catch(() => lastSnapshot);
   }, POLL_INTERVAL_MS);
 
-  // Wait for the user to exit the agent (Ctrl+C, /exit, etc.)
+  // Wait for the user to exit the agent (Ctrl+C, /exit, "macc switch", etc.)
   await new Promise<void>(resolve => child.on('close', resolve));
   clearInterval(monitor);
+  process.off('SIGUSR1', sigusr1Handler);
+  clearPid();
 
   // Re-read context after exit for accuracy.
   const snap = await agent.getUsageSnapshot().catch(() => lastSnapshot);
@@ -91,27 +121,33 @@ export async function runWithRotation(
 
   console.log(''); // newline after agent's terminal output
 
-  if (pct > 0) {
+  if (pct >= 85) {
+    printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
+  } else {
     console.log(chalk.dim(`  Session ended. Context was at ${pct.toFixed(0)}%.`));
   }
 
-  if (pct < 85 || targets.length === 0) {
-    // Not near the limit — no rotation needed.
+  if (targets.length === 0) {
+    console.log(chalk.dim('  No other agents available.\n'));
     return;
   }
 
-  // Context was high — offer to rotate.
-  printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
-  console.log(chalk.dim('  Rotate to another agent to continue?\n'));
+  // Always offer to switch — user may want to rotate even at low context.
+  const menuTitle = forceSwitch
+    ? chalk.bold('  Manual switch — pick an agent:')
+    : pct >= 85
+      ? chalk.dim('  Rotate to another agent to continue?')
+      : chalk.dim('  Switch to another agent? (context still has room)');
+  console.log(menuTitle + '\n');
 
-  printHandoffMenu(targets.map(t => t.id));
+  printHandoffMenu(targets.map(t => t.id), forceSwitch);
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise<string>(r => rl.question(chalk.bold.green('> '), r));
   rl.close();
 
   const choice = parseInt(answer.trim(), 10);
-  if (isNaN(choice) || choice < 1 || choice > targets.length) {
-    console.log(chalk.dim('\n  Staying put. Run macc again to continue.\n'));
+  if (isNaN(choice) || choice === 0 || choice > targets.length) {
+    console.log(chalk.dim('\n  Exiting MACC.\n'));
     return;
   }
 

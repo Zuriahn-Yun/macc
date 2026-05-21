@@ -39,16 +39,43 @@ function findLatestSessionFile(cwd: string, global = false): string | null {
   return allFiles.length > 0 ? allFiles[0].file : null;
 }
 
-// Extract text from a Claude content block (handles 'text' and 'thinking' block types).
-function extractText(content: unknown): string {
+// Injected into every Claude Code session so the model narrates its work.
+// This makes the JSONL far more useful when the compressor reads it back.
+export const VERBOSE_STATUS_PROMPT =
+  'After completing each task or group of tool calls, append a brief status ' +
+  'line to your response in this exact format:\n' +
+  '[STATUS] files=<paths or none> cmds=<count> goal=<objective in ≤10 words>\n' +
+  'This enables seamless handoff when the context window fills up.';
+
+// Extract all meaningful content from a Claude content block array.
+// Captures text, tool_use calls, and tool_result outputs — not just text blocks.
+export function extractContentBlocks(content: unknown): string {
   if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b: { type?: string }) => b.type === 'text')
-      .map((b: { text?: string }) => b.text ?? '')
-      .join('');
+  if (!Array.isArray(content)) return '';
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block !== 'object' || !block) continue;
+    const b = block as Record<string, unknown>;
+
+    if (b.type === 'text' && typeof b.text === 'string') {
+      if (b.text) parts.push(b.text);
+    } else if (b.type === 'tool_use') {
+      const name = String(b.name ?? 'unknown');
+      const input = b.input ? JSON.stringify(b.input).slice(0, 400) : '';
+      parts.push(`[Tool: ${name}(${input})]`);
+    } else if (b.type === 'tool_result') {
+      const raw = typeof b.content === 'string'
+        ? b.content
+        : JSON.stringify(b.content ?? '');
+      const preview = raw.slice(0, 600);
+      const suffix = raw.length > 600 ? '…' : '';
+      const errFlag = b.is_error ? ' ERROR' : '';
+      parts.push(`[Result${errFlag}: ${preview}${suffix}]`);
+    }
+    // skip 'thinking' blocks — not useful for compression
   }
-  return '';
+  return parts.join('\n');
 }
 
 function parseSessionFile(filePath: string): {
@@ -74,12 +101,12 @@ function parseSessionFile(filePath: string): {
           (usage.cache_creation_input_tokens ?? 0);
         if (total > inputTokens) inputTokens = total; // keep the highest seen (last turn)
 
-        const text = extractText(msg.content);
+        const text = extractContentBlocks(msg.content);
         if (text) messages.push({ role: 'assistant', content: text });
       }
 
       if (type === 'user') {
-        const text = extractText(entry.message?.content ?? entry.message ?? '');
+        const text = extractContentBlocks(entry.message?.content ?? entry.message ?? '');
         if (text) messages.push({ role: 'user', content: text });
       }
     } catch {
@@ -145,6 +172,10 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
 
     const { inputTokens, messages } = parseSessionFile(sessionFile);
     return { messages, cwd: this.cwd, inputTokensUsed: inputTokens, contextWindowTokens: CONTEXT_WINDOW };
+  }
+
+  buildBaseArgs(): string[] {
+    return ['--append-system-prompt', VERBOSE_STATUS_PROMPT];
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {

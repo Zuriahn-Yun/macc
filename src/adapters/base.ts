@@ -26,6 +26,8 @@ export interface IAgentAdapter {
   getUsageSnapshot(): Promise<UsageSnapshot>;
   extractSessionContext(): Promise<SessionContext | null>;
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs;
+  /** Extra flags prepended on every spawn (e.g. --append-system-prompt). Optional. */
+  buildBaseArgs?(): string[];
   isRunning(): Promise<boolean>;
   getContextWindowSize(): number;
 }

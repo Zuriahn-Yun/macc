@@ -33,14 +33,14 @@ export function printWarning(usagePercent: number, inputTokens: number, contextW
   console.log(chalk.yellow.bold(`  ⚠  Context at ${usagePercent.toFixed(0)}% — ${inputTokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens used.`));
 }
 
-export function printHandoffMenu(models: string[]): void {
+export function printHandoffMenu(models: string[], forced = false): void {
   console.log('');
-  console.log(chalk.bold('  Compress and continue with:'));
+  console.log(chalk.bold(forced ? '  Switch to which agent?' : '  Compress and continue with:'));
+  console.log(chalk.dim('  [0] Exit MACC'));
   models.forEach((m, i) => {
     const label = i === 0 ? chalk.green(`  [${i + 1}] ${m}`) + chalk.dim(' — recommended') : `  [${i + 1}] ${m}`;
     console.log(label);
   });
-  console.log(chalk.dim(`  [${models.length + 1}] Stay here (limited space remaining)`));
   console.log('');
 }
 
