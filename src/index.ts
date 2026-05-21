@@ -7,6 +7,10 @@ import { listModels, detectAvailableBackend } from './backends/registry.js';
 import { discoverAdapters, allAdapters } from './adapters/registry.js';
 import { runWithRotation, watchAll, triggerHandoff } from './core/orchestrator.js';
 import { fanOut } from './core/fanout.js';
+import {
+  addCustomAgent, removeCustomAgent, loadCustomAgents,
+  type CustomAgentConfig, type SessionFormat,
+} from './adapters/generic.js';
 
 const program = new Command();
 
@@ -186,6 +190,84 @@ program
       commandName: source.commandName,
       printFlag: '--print',
     });
+  });
+
+// ---------------------------------------------------------------------------
+// macc agent — manage user-defined agents
+// ---------------------------------------------------------------------------
+
+const agentCmd = program.command('agent').description('Manage custom agents');
+
+agentCmd
+  .command('add')
+  .description('Add a custom agent via interactive wizard')
+  .action(async () => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>(r => rl.question(chalk.bold.green(q), r));
+
+    console.log(chalk.bold('\n  MACC — Add Custom Agent\n'));
+
+    const displayName = (await ask('  Display name (e.g. "Aider"): ')).trim();
+    if (!displayName) { console.log(chalk.dim('\n  Cancelled.\n')); rl.close(); return; }
+
+    const commandName = (await ask('  CLI binary name (e.g. "aider"): ')).trim();
+    if (!commandName) { console.log(chalk.dim('\n  Cancelled.\n')); rl.close(); return; }
+
+    const id = commandName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+    const ctxRaw = (await ask('  Context window size in tokens (e.g. 128000): ')).trim();
+    const contextWindow = parseInt(ctxRaw, 10) || 128_000;
+
+    console.log(chalk.dim('\n  Session format options:'));
+    console.log('  [1] claude-compatible  (same JSONL as Claude Code — works for many agents)');
+    console.log('  [2] none               (no session reading — handoff-to only)\n');
+    const fmtChoice = (await ask('  Pick session format [1/2]: ')).trim();
+    const sessionFormat: SessionFormat = fmtChoice === '2' ? 'none' : 'claude-compatible';
+
+    let sessionDir: string | undefined;
+    if (sessionFormat === 'claude-compatible') {
+      const raw = (await ask('  Session directory (e.g. "~/.aider/sessions", Enter to skip): ')).trim();
+      sessionDir = raw || undefined;
+    }
+
+    const installCmd = (await ask('  Install command (Enter to skip): ')).trim() || undefined;
+
+    rl.close();
+
+    const config: CustomAgentConfig = { id, displayName, commandName, contextWindow, sessionFormat, sessionDir, installCmd };
+    addCustomAgent(config);
+
+    console.log(chalk.green(`\n  ✓ "${displayName}" added. Run "macc start" to use it.\n`));
+  });
+
+agentCmd
+  .command('list')
+  .description('List all custom agents')
+  .action(() => {
+    const agents = loadCustomAgents();
+    if (agents.length === 0) {
+      console.log(chalk.dim('\n  No custom agents configured. Run "macc agent add" to add one.\n'));
+      return;
+    }
+    console.log(chalk.bold('\n  Custom agents:\n'));
+    for (const a of agents) {
+      const installed = (() => { try { require('node:child_process').execFileSync('which', [a.commandName], { stdio: 'ignore' }); return true; } catch { return false; } })();
+      const status = installed ? chalk.green('✓') : chalk.dim('✗');
+      console.log(`  ${status} ${a.displayName.padEnd(18)} ${chalk.dim(a.commandName.padEnd(14))} ${chalk.dim(a.sessionFormat)}`);
+    }
+    console.log('');
+  });
+
+agentCmd
+  .command('remove <id>')
+  .description('Remove a custom agent by id')
+  .action((id: string) => {
+    const removed = removeCustomAgent(id);
+    if (removed) {
+      console.log(chalk.green(`\n  ✓ Agent "${id}" removed.\n`));
+    } else {
+      console.log(chalk.red(`\n  Agent "${id}" not found. Run "macc agent list" to see configured agents.\n`));
+    }
   });
 
 // Direct AI chat (for testing / no agent CLIs installed)
