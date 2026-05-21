@@ -22,36 +22,48 @@ program
   .option('-a, --agent <id>', 'agent to start: claude-code, gemini-cli, codex, qodo')
   .action(async (opts) => {
     const cwd = process.cwd();
-    const adapters = discoverAdapters(cwd);
+    const all = allAdapters(cwd);
+    const installed = all.filter(a => a.installed).map(a => a.adapter);
 
-    if (adapters.length === 0) {
-      console.error(chalk.red('\n  No supported agents found on PATH.'));
-      console.error(chalk.dim('  Install one of: claude, gemini, codex, qoder\n'));
+    // Always show the agent status table on start
+    console.log(chalk.bold('\n  MACC — Multi-Agent Coding Client\n'));
+    for (const { adapter, installed: isInstalled, installCmd } of all) {
+      const ctx = (adapter.getContextWindowSize() / 1000).toFixed(0);
+      if (isInstalled) {
+        console.log(`  ${chalk.green('✓')} ${adapter.id.padEnd(14)} ${chalk.dim(`${ctx}k ctx`)}`);
+      } else {
+        console.log(`  ${chalk.dim('✗')} ${chalk.dim(adapter.id.padEnd(14))} ${chalk.dim('not installed')}`);
+        console.log(`    ${chalk.dim(`→ ${installCmd}`)}`);
+      }
+    }
+    console.log('');
+
+    if (installed.length === 0) {
+      console.error(chalk.red('  No supported agents found on PATH. Install at least one above.\n'));
       process.exit(1);
     }
 
     const backend = await detectAvailableBackend();
     if (!backend) {
-      console.error(chalk.red('\n  No AI credentials found for compression.'));
+      console.error(chalk.red('  No AI credentials found for compression.'));
       console.error(chalk.dim('  Log in: claude auth login  OR  set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
       process.exit(1);
     }
 
     let chosen = opts.agent
-      ? adapters.find(a => a.id === opts.agent)
+      ? installed.find(a => a.id === opts.agent)
       : null;
 
-    if (!chosen && adapters.length === 1) {
-      chosen = adapters[0];
+    if (!chosen && installed.length === 1) {
+      chosen = installed[0];
+      console.log(chalk.dim(`  Only one agent available — starting ${chosen.id}.\n`));
     }
 
     if (!chosen) {
-      // Ask the user to pick
-      console.log(chalk.bold('\n  MACC — Agent Rotator'));
       console.log(chalk.dim('  Pick an agent to start:\n'));
-      adapters.forEach((a, i) => {
+      installed.forEach((a, i) => {
         const ctx = (a.getContextWindowSize() / 1000).toFixed(0);
-        console.log(`    [${i + 1}] ${a.id.padEnd(14)} ${chalk.dim(`${ctx}k ctx`)}`);
+        console.log(`  [${i + 1}] ${a.id.padEnd(14)} ${chalk.dim(`${ctx}k ctx`)}`);
       });
       console.log('');
 
@@ -60,14 +72,14 @@ program
       rl.close();
 
       const n = parseInt(answer.trim(), 10);
-      if (isNaN(n) || n < 1 || n > adapters.length) {
+      if (isNaN(n) || n < 1 || n > installed.length) {
         console.log(chalk.dim('\n  Cancelled.\n'));
         process.exit(0);
       }
-      chosen = adapters[n - 1];
+      chosen = installed[n - 1];
     }
 
-    const targets = adapters.filter(a => a.id !== chosen!.id);
+    const targets = installed.filter(a => a.id !== chosen!.id);
     await runWithRotation(chosen!, targets, backend);
   });
 
