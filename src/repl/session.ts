@@ -11,8 +11,7 @@ import {
   printUsageBar,
   printWarning,
   printHandoffMenu,
-  printHandoffStart,
-  printHandoffDone,
+  startHandoffProgress,
   printSwitchBanner,
   printHelp,
 } from '../utils/display.js';
@@ -59,9 +58,12 @@ export async function startSession(initialModelId?: string, debug = false): Prom
     const input = line.trim();
     if (!input) { rl.prompt(); return; }
 
-    // Slash commands
-    if (input.startsWith('/')) {
-      await handleCommand(input, store, backend, config.handoffOrder, rl, (b, s) => { backend = b; store = s; });
+    // Slash commands — also accept bare words
+    const BARE_COMMANDS = new Set(['help', 'status', 'switch', 'model', 'start', 'watch', 'handoff', 'agent', 'compress', 'history']);
+    const bare = input.split(' ')[0].toLowerCase();
+    const normalised = input.startsWith('/') ? input : BARE_COMMANDS.has(bare) ? '/' + input : null;
+    if (normalised) {
+      await handleCommand(normalised, store, backend, config.handoffOrder, rl, (b, s) => { backend = b; store = s; });
       rl.prompt();
       return;
     }
@@ -132,7 +134,8 @@ async function handleCommand(
   rl: readline.Interface,
   onSwitch: (b: ReturnType<typeof getBackend>, s: ContextStore) => void
 ): Promise<void> {
-  const cmd = input.split(' ')[0];
+  const parts = input.split(' ');
+  const cmd = parts[0];
   switch (cmd) {
     case '/status': {
       const snap = store.getSnapshot();
@@ -152,8 +155,26 @@ async function handleCommand(
       if (result) onSwitch(result.backend, result.store);
       break;
     }
+    case '/start':
+      console.log(chalk.dim('\n  Run "macc start" in your terminal to launch an agent session.\n'));
+      break;
+    case '/watch':
+      console.log(chalk.dim('\n  Run "macc watch" in your terminal to open the live dashboard.\n'));
+      break;
+    case '/handoff':
+      console.log(chalk.dim('\n  Run "macc handoff" in your terminal to compress and hand off to another agent.\n'));
+      break;
+    case '/agent':
+      console.log(chalk.dim('\n  Run "macc agent add/list/remove" in your terminal to manage custom agents.\n'));
+      break;
+    case '/compress':
+      console.log(chalk.dim('\n  [Work in progress] compress — will shrink the current context window so you can keep chatting without switching models.\n'));
+      break;
+    case '/history':
+      console.log(chalk.dim('\n  [Work in progress] history — will show a log of past model switches and handoffs in this session.\n'));
+      break;
     default:
-      console.log(chalk.dim(`\n  Unknown command: ${cmd}. Type /help for available commands.`));
+      console.log(chalk.dim(`\n  Unknown command: ${cmd}. Type "help" to see available commands.\n`));
   }
 }
 
@@ -179,11 +200,11 @@ async function promptHandoff(
       const cwd = process.cwd();
 
       const start = Date.now();
-      printHandoffStart(toModel);
+      const progress = startHandoffProgress();
 
       try {
-        const packet = await compressContext(currentBackend, store, toModel, cwd);
-        printHandoffDone(toModel, Date.now() - start);
+        const packet = await compressContext(currentBackend, store, toModel, cwd, progress.onProgress);
+        progress.finish(Date.now() - start);
 
         const newBackend = getBackend(toModel);
         const newStore = new ContextStore(

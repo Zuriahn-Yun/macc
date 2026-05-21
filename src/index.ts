@@ -2,11 +2,11 @@
 import { Command } from 'commander';
 import readline from 'node:readline';
 import chalk from 'chalk';
-import { startSession } from './repl/session.js';
-import { listModels, detectAvailableBackend } from './backends/registry.js';
+import { createRequire } from 'node:module';
+const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
+import { detectAllAvailableBackends } from './backends/registry.js';
 import { discoverAdapters, allAdapters } from './adapters/registry.js';
-import { runWithRotation, watchAll, triggerHandoff } from './core/orchestrator.js';
-import { fanOut } from './core/fanout.js';
+import { runWithRotation, watchAll, triggerHandoff, printStatusOnce } from './core/orchestrator.js';
 import {
   addCustomAgent, removeCustomAgent, loadCustomAgents,
   type CustomAgentConfig, type SessionFormat,
@@ -17,7 +17,29 @@ const program = new Command();
 program
   .name('macc')
   .description('Run any AI coding agent and rotate to the next one when context fills up')
-  .version('0.3.1');
+  .version(version);
+
+const commandRows: [string, string][] = [
+  ['macc start',          'Launch an agent; auto-switches when context fills up'],
+  ['macc status',         'Snapshot of context usage across all agents'],
+  ['macc watch',          'Live dashboard; monitors agents in real time'],
+  ['macc switch [agent]', 'Switch to a different agent mid-session'],
+  ['macc handoff',        'Compress current session and continue in another agent'],
+  ['macc agent add',      'Add a custom agent via setup wizard'],
+  ['macc agent list',     'List all configured custom agents'],
+  ['macc agent remove',   'Remove a custom agent by id'],
+  ['macc help',           'Full command reference'],
+];
+
+function printCommandReference(): void {
+  console.log('');
+  console.log(chalk.bold('  Commands:'));
+  const maxLen = Math.max(...commandRows.map(([cmd]) => cmd.length));
+  for (const [cmd, desc] of commandRows) {
+    console.log(`  ${chalk.bold(cmd.padEnd(maxLen + 2))} ${chalk.dim(desc)}`);
+  }
+  console.log('');
+}
 
 // Default: interactive agent launcher with auto-rotation
 program
@@ -47,10 +69,21 @@ program
       process.exit(1);
     }
 
-    const backend = await detectAvailableBackend();
-    if (!backend) {
+    const backends = await detectAllAvailableBackends();
+    if (backends.length === 0) {
       console.error(chalk.red('  No AI credentials found for compression.'));
       console.error(chalk.dim('  Log in: claude auth login  OR  set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
+      process.exit(1);
+    }
+
+    if (opts.agent && !installed.find(a => a.id === opts.agent)) {
+      const known = all.map(a => a.adapter.id);
+      const isKnown = known.includes(opts.agent);
+      if (isKnown) {
+        console.error(chalk.red(`\n  Agent "${opts.agent}" is not installed.\n`));
+      } else {
+        console.error(chalk.red(`\n  Unknown agent "${opts.agent}". Available: ${known.join(', ')}\n`));
+      }
       process.exit(1);
     }
 
@@ -64,27 +97,87 @@ program
     }
 
     if (!chosen) {
-      console.log(chalk.dim('  Pick an agent to start:\n'));
-      installed.forEach((a, i) => {
-        const ctx = (a.getContextWindowSize() / 1000).toFixed(0);
-        console.log(`  [${i + 1}] ${a.id.padEnd(14)} ${chalk.dim(`${ctx}k ctx`)}`);
-      });
-      console.log('');
+      const printAgentMenu = () => {
+        console.log(chalk.dim('  Pick an agent to start:\n'));
+        installed.forEach((a, i) => {
+          const ctx = (a.getContextWindowSize() / 1000).toFixed(0);
+          console.log(`  [${i + 1}] ${a.id.padEnd(14)} ${chalk.dim(`${ctx}k ctx`)}`);
+        });
+        console.log(chalk.dim('\n  Type a number or agent id to start, "watch"/"status" to inspect, "help" for commands, or "q" to quit.\n'));
+      };
 
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-      const answer = await new Promise<string>(r => rl.question(chalk.bold.green('> '), r));
-      rl.close();
+      printAgentMenu();
 
-      const n = parseInt(answer.trim(), 10);
-      if (isNaN(n) || n < 1 || n > installed.length) {
-        console.log(chalk.dim('\n  Cancelled.\n'));
-        process.exit(0);
+      let chosen_n = -1;
+      while (true) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>(r => rl.question(chalk.bold.green('> '), r));
+        rl.close();
+        const trimmed = answer.trim().toLowerCase();
+
+        if (trimmed === 'q' || trimmed === 'quit' || trimmed === 'exit') {
+          console.log(chalk.dim('\n  Exiting.\n'));
+          process.exit(0);
+        }
+
+        if (trimmed === 'help' || trimmed === '/help' || trimmed === 'macc help') {
+          printCommandReference();
+          printAgentMenu();
+          continue;
+        }
+
+        if (trimmed === 'start' || trimmed === 'macc start') {
+          printAgentMenu();
+          continue;
+        }
+
+        if (trimmed === 'watch' || trimmed === 'macc watch') {
+          await watchAll(all, backends);
+          printAgentMenu();
+          continue;
+        }
+
+        if (trimmed === 'status' || trimmed === 'macc status') {
+          await printStatusOnce(all);
+          printAgentMenu();
+          continue;
+        }
+
+        const command = (() => {
+          if (trimmed === 'switch' || trimmed.startsWith('macc switch')) return 'macc switch';
+          if (trimmed === 'handoff' || trimmed === 'macc handoff') return 'macc handoff';
+          if (trimmed === 'agent add' || trimmed === 'macc agent add') return 'macc agent add';
+          if (trimmed === 'agent list' || trimmed === 'macc agent list') return 'macc agent list';
+          if (trimmed.startsWith('agent remove') || trimmed.startsWith('macc agent remove')) return 'macc agent remove';
+          return null;
+        })();
+        if (command) {
+          console.log(chalk.dim(`\n  Run "${command}" in another terminal while MACC is running.\n`));
+          printAgentMenu();
+          continue;
+        }
+
+        const byId = installed.find(a => a.id.toLowerCase() === trimmed);
+        if (byId) {
+          chosen = byId;
+          break;
+        }
+
+        const n = parseInt(trimmed, 10);
+        if (!isNaN(n) && n >= 1 && n <= installed.length) {
+          chosen_n = n;
+          break;
+        }
+
+        const shown = answer.trim() || '<empty>';
+        console.log(chalk.dim(`\n  "${shown}" is not a command.`));
+        console.log(chalk.dim(`  Enter a number 1-${installed.length}, an agent id, "watch", "status", "help", "start", or "q" to quit.\n`));
       }
-      chosen = installed[n - 1];
+      chosen ??= installed[chosen_n - 1];
     }
 
     const targets = installed.filter(a => a.id !== chosen!.id);
-    await runWithRotation(chosen!, targets, backend);
+    await runWithRotation(chosen!, targets, backends);
   });
 
 // Passive monitor (dashboard only, does not launch agents)
@@ -93,13 +186,51 @@ program
   .description('Dashboard — monitor running agents without launching them')
   .action(async () => {
     const cwd = process.cwd();
-    const backend = await detectAvailableBackend();
-    if (!backend) {
+    const backends = await detectAllAvailableBackends();
+    if (backends.length === 0) {
       console.error(chalk.red('\n  No AI credentials found for compression.\n'));
       process.exit(1);
     }
     const agents = allAdapters(cwd);
-    await watchAll(agents, backend);
+    await watchAll(agents, backends);
+
+    // After exiting the dashboard, offer to start an agent
+    const installed = agents.filter(a => a.installed).map(a => a.adapter);
+    if (installed.length > 0) {
+      const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>(r =>
+        rl2.question(chalk.dim('  Start an agent? [y/N] '), r)
+      );
+      rl2.close();
+      if (answer.trim().toLowerCase() === 'y') {
+        const targets = installed.slice(1);
+        await runWithRotation(installed[0], targets, backends);
+      }
+    }
+  });
+
+// One-shot status snapshot
+program
+  .command('status')
+  .description('Show current context usage for all agents (one-shot)')
+  .action(async () => {
+    const cwd = process.cwd();
+    const agents = allAdapters(cwd);
+    await printStatusOnce(agents);
+  });
+
+// Show all available commands
+program
+  .command('help')
+  .description('Show all macc commands and what they do')
+  .action(() => {
+    console.log('');
+    console.log(chalk.bold('  MACC — Multi-Agent Coding Client'));
+    console.log(chalk.dim(`  v${version}\n`));
+    printCommandReference();
+    console.log(chalk.dim('  Flags:'));
+    console.log(`  ${chalk.bold('macc start -a <id>')}    ${chalk.dim('Start a specific agent (claude-code, gemini-cli, codex…)')}`);
+    console.log('');
   });
 
 // Manual one-shot handoff
@@ -117,21 +248,22 @@ program
     const source = opts.source ? adapters.find(a => a.id === opts.source) : adapters[0];
     if (!source) { console.error(chalk.red(`\n  Agent "${opts.source}" not found.\n`)); process.exit(1); }
     const targets = adapters.filter(a => a.id !== source.id);
-    const backend = await detectAvailableBackend();
-    if (!backend) { console.error(chalk.red('\n  No AI credentials found.\n')); process.exit(1); }
-    await triggerHandoff(source, targets, backend);
+    const backends = await detectAllAvailableBackends();
+    if (backends.length === 0) { console.error(chalk.red('\n  No AI credentials found.\n')); process.exit(1); }
+    await triggerHandoff(source, targets, backends);
   });
 
 // Trigger a manual agent switch mid-session
 program
-  .command('switch')
-  .description('Switch agents now — sends a switch signal to the running MACC session')
-  .action(async () => {
+  .command('switch [agent]')
+  .description('Switch agents — optionally specify target agent id to skip the picker')
+  .action(async (agent?: string) => {
     const { default: fs } = await import('node:fs');
     const { default: os } = await import('node:os');
     const { default: path } = await import('node:path');
 
-    const pidFile = path.join(os.homedir(), '.macc', 'running.pid');
+    const maccDir = path.join(os.homedir(), '.macc');
+    const pidFile = path.join(maccDir, 'running.pid');
     if (!fs.existsSync(pidFile)) {
       console.error(chalk.red('\n  No running MACC session found. Start one with "macc start".\n'));
       process.exit(1);
@@ -143,54 +275,26 @@ program
       process.exit(1);
     }
 
+    if (agent) {
+      fs.mkdirSync(maccDir, { recursive: true });
+      fs.writeFileSync(path.join(maccDir, 'switch-target'), agent, 'utf8');
+    }
+
     try {
       process.kill(pid, 'SIGUSR1');
-      console.log(chalk.green(`\n  Switch signal sent to MACC (pid ${pid}).\n`));
-      console.log(chalk.dim('  The agent will exit and MACC will prompt you to pick a new one.\n'));
+      if (agent) {
+        console.log(chalk.green(`\n  Switching to ${agent} (pid ${pid}).\n`));
+      } else {
+        console.log(chalk.green(`\n  Switch signal sent to MACC (pid ${pid}).\n`));
+        console.log(chalk.dim('  The agent will exit and MACC will prompt you to pick a new one.\n'));
+      }
     } catch {
+      if (agent) fs.rmSync(path.join(maccDir, 'switch-target'), { force: true });
       console.error(chalk.red(`\n  Could not signal pid ${pid} — is MACC still running?\n`));
       process.exit(1);
     }
   });
 
-// Fan out current session to N parallel subagents then synthesize
-program
-  .command('fanout')
-  .description('Fan out session to N parallel subagents and synthesize results')
-  .option('-n, --count <n>', 'number of parallel subagents', '3')
-  .option('-a, --agent <id>', 'agent CLI to use for subagents (default: first available)')
-  .action(async (opts) => {
-    const count = Math.max(1, parseInt(opts.count, 10) || 3);
-    const adapters = discoverAdapters(process.cwd());
-
-    if (adapters.length === 0) {
-      console.error(chalk.red('\n  No supported agents found on PATH.'));
-      console.error(chalk.dim('  Install one of: claude, gemini, codex, qoder\n'));
-      process.exit(1);
-    }
-
-    const backend = await detectAvailableBackend();
-    if (!backend) {
-      console.error(chalk.red('\n  No AI credentials found for decomposition/synthesis.'));
-      console.error(chalk.dim('  Log in: claude auth login  OR  set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
-      process.exit(1);
-    }
-
-    const source = opts.agent
-      ? adapters.find(a => a.id === opts.agent)
-      : adapters[0];
-
-    if (!source) {
-      console.error(chalk.red(`\n  Agent "${opts.agent}" not found on PATH.\n`));
-      process.exit(1);
-    }
-
-    await fanOut(source, backend, {
-      count,
-      commandName: source.commandName,
-      printFlag: '--print',
-    });
-  });
 
 // ---------------------------------------------------------------------------
 // macc agent — manage user-defined agents
@@ -268,26 +372,6 @@ agentCmd
     } else {
       console.log(chalk.red(`\n  Agent "${id}" not found. Run "macc agent list" to see configured agents.\n`));
     }
-  });
-
-// Direct AI chat (for testing / no agent CLIs installed)
-program
-  .command('chat')
-  .description('Direct AI chat (switches AI models, not agent CLIs)')
-  .option('-m, --model <model>', 'model to use (default: claude-sonnet-4-6)')
-  .option('--debug', 'verbose API debug output')
-  .action(async (opts) => {
-    await startSession(opts.model, opts.debug ?? false);
-  });
-
-program
-  .command('models')
-  .description('List models available for macc chat')
-  .action(() => {
-    console.log('');
-    console.log(chalk.bold('  Models for macc chat:'));
-    listModels().forEach(m => console.log(`    ${m}`));
-    console.log('');
   });
 
 program.parse();

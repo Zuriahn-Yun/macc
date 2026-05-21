@@ -51,15 +51,17 @@ MACC uses **your existing CLI logins** — no API keys to copy, paste, or rotate
 ## Usage
 
 ```bash
-# Launch with auto-detected credentials
+# Pick an installed agent to launch
 macc
 
-# Launch with a specific model
-macc --model gemini-2.5-pro
-macc --model claude-opus-4-7
+# Launch a specific agent
+macc start -a codex
 
-# List available models
-macc models
+# Show all agents and current context usage
+macc status
+
+# Open the live dashboard
+macc watch
 ```
 
 ### In-session commands

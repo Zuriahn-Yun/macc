@@ -35,6 +35,9 @@ function findLatestGeminiSession(): string | null {
   return allFiles.length > 0 ? allFiles[0].file : null;
 }
 
+// Exported for use by GenericAgentAdapter (gemini-compatible session format).
+export { extractGeminiContent, parseGeminiSession };
+
 // Extract readable text from a Gemini PartListUnion content value.
 // Parts can be: { text }, { functionCall: { name, args } }, { functionResponse: { name, response } }
 function extractGeminiContent(content: unknown): string {
@@ -68,6 +71,7 @@ function extractGeminiContent(content: unknown): string {
 function parseGeminiSession(filePath: string): {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   totalTokens: number;
+  isEstimated: boolean;
 } {
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   let totalTokens = 0;
@@ -97,13 +101,15 @@ function parseGeminiSession(filePath: string): {
     } catch { /* skip malformed lines */ }
   }
 
-  // Fall back to character-based estimation if token counts were not recorded
+  // Fall back to character-based estimation (~4 chars per token) if no token data was logged
+  let isEstimated = false;
   if (totalTokens === 0 && messages.length > 0) {
     const chars = messages.reduce((s, m) => s + m.content.length, 0);
-    totalTokens = Math.round(chars * 1.3);
+    totalTokens = Math.round(chars / 4);
+    isEstimated = true;
   }
 
-  return { messages, totalTokens };
+  return { messages, totalTokens, isEstimated };
 }
 
 export class GeminiAdapter implements IAgentAdapter {
@@ -128,7 +134,7 @@ export class GeminiAdapter implements IAgentAdapter {
     if (!sessionFile) {
       return { agentId: this.id, isRunning: false, contextUsedPercent: 0, inputTokensUsed: 0, contextWindowTokens: CONTEXT_WINDOW };
     }
-    const { totalTokens } = parseGeminiSession(sessionFile);
+    const { totalTokens, isEstimated } = parseGeminiSession(sessionFile);
     const isRunning = await this.isRunning();
     return {
       agentId: this.id,
@@ -136,6 +142,7 @@ export class GeminiAdapter implements IAgentAdapter {
       contextUsedPercent: (totalTokens / CONTEXT_WINDOW) * 100,
       inputTokensUsed: totalTokens,
       contextWindowTokens: CONTEXT_WINDOW,
+      isEstimated,
     };
   }
 
@@ -144,6 +151,11 @@ export class GeminiAdapter implements IAgentAdapter {
     if (!sessionFile) return null;
     const { messages, totalTokens } = parseGeminiSession(sessionFile);
     return { messages, cwd: process.cwd(), inputTokensUsed: totalTokens, contextWindowTokens: CONTEXT_WINDOW };
+  }
+
+  buildNonInteractiveArgs(prompt: string): string[] {
+    // Gemini CLI uses -p / --prompt for non-interactive (print) mode
+    return ['-p', prompt];
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {

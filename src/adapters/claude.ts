@@ -174,8 +174,21 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
     return { messages, cwd: this.cwd, inputTokensUsed: inputTokens, contextWindowTokens: CONTEXT_WINDOW };
   }
 
+  async getActiveSessionId(): Promise<string | null> {
+    const file = findLatestSessionFile(this.cwd, true);
+    return file ? path.basename(file, '.jsonl') : null;
+  }
+
   buildBaseArgs(): string[] {
     return ['--append-system-prompt', VERBOSE_STATUS_PROMPT];
+  }
+
+  buildResumeArgs(sessionId: string): string[] {
+    return ['--resume', sessionId, '--append-system-prompt', VERBOSE_STATUS_PROMPT];
+  }
+
+  buildNonInteractiveArgs(prompt: string): string[] {
+    return ['--print', prompt];
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {

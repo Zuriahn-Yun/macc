@@ -12,7 +12,7 @@ const MODEL_MAP: Record<string, () => IModelBackend> = {
 
 export function getBackend(modelId: string): IModelBackend {
   const factory = MODEL_MAP[modelId];
-  if (!factory) throw new Error(`Unknown model: ${modelId}. Run \`macc models\` to see available models.`);
+  if (!factory) throw new Error(`Unknown model: ${modelId}. Check the configured handoff models in ~/.macc/config.json.`);
   return factory();
 }
 
@@ -27,4 +27,14 @@ export async function detectAvailableBackend(): Promise<IModelBackend | null> {
     if (await backend.isAvailable()) return backend;
   }
   return null;
+}
+
+// Returns ALL backends with credentials present, in registry order.
+export async function detectAllAvailableBackends(): Promise<IModelBackend[]> {
+  const results: IModelBackend[] = [];
+  for (const factory of Object.values(MODEL_MAP)) {
+    const backend = factory();
+    if (await backend.isAvailable()) results.push(backend);
+  }
+  return results;
 }

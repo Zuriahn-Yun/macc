@@ -83,23 +83,17 @@ Return ONLY valid JSON matching: { "summary": "...", "nextStep": "...", "combine
 
 // ---------------------------------------------------------------------------
 // Run one subagent non-interactively and capture its output.
-// Uses `claude --print "prompt"` (or equivalent for other agents).
+// Uses the adapter's buildNonInteractiveArgs to get the right flags per CLI.
 // ---------------------------------------------------------------------------
 
 async function runSubagent(
   commandName: string,
-  printFlag: string,
-  prompt: string,
+  args: string[],
   index: number,
 ): Promise<{ title: string; output: string; elapsed: number }> {
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
-    // All agents support a non-interactive "print" mode:
-    //   claude --print "..."
-    //   gemini --model "..." (or similar)
-    //   codex --print "..."
-    const args = [printFlag, prompt];
     const child = spawn(commandName, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -128,9 +122,7 @@ async function runSubagent(
 // ---------------------------------------------------------------------------
 
 export interface FanOutOptions {
-  count: number;          // number of parallel subagents (default 3)
-  commandName: string;    // which agent CLI to use (e.g. 'claude')
-  printFlag: string;      // flag for non-interactive mode (e.g. '--print')
+  count: number;  // number of parallel subagents (default 3)
 }
 
 export async function fanOut(
@@ -138,7 +130,8 @@ export async function fanOut(
   backend: IModelBackend,
   opts: FanOutOptions,
 ): Promise<void> {
-  const { count, commandName, printFlag } = opts;
+  const { count } = opts;
+  const commandName = source.commandName;
 
   // 1. Extract current session context
   process.stdout.write(chalk.dim('  Reading session context...'));
@@ -174,7 +167,7 @@ export async function fanOut(
   console.log('');
 
   // 4. Run all subagents in parallel
-  console.log(chalk.dim(`  Running ${commandName} ${printFlag} in parallel...\n`));
+  console.log(chalk.dim(`  Running ${commandName} in parallel...\n`));
   const spinChars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   let spinIdx = 0;
   const spinner = setInterval(() => {
@@ -182,7 +175,10 @@ export async function fanOut(
   }, 100);
 
   const settled = await Promise.allSettled(
-    subtasks.map((t, i) => runSubagent(commandName, printFlag, t.prompt, i))
+    subtasks.map((t, i) => {
+      const subArgs = source.buildNonInteractiveArgs?.(t.prompt) ?? ['--print', t.prompt];
+      return runSubagent(commandName, subArgs, i);
+    })
   );
   clearInterval(spinner);
   process.stdout.write('\r' + ' '.repeat(30) + '\r');

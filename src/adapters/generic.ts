@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import type { IAgentAdapter, SessionContext, UsageSnapshot, LaunchArgs } from './base.js';
 import type { HandoffPacket } from '../models/handoff-packet.js';
 import { extractContentBlocks } from './claude.js';
+import { parseGeminiSession } from './gemini.js';
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -95,6 +96,7 @@ function findLatestSessionFile(baseDir: string): string | null {
 function parseClaudeCompatible(filePath: string): {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   inputTokens: number;
+  isEstimated: boolean;
 } {
   const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
@@ -123,8 +125,9 @@ function parseClaudeCompatible(filePath: string): {
     } catch { /* skip */ }
   }
 
-  if (inputTokens === 0) inputTokens = Math.round(chars * 1.3);
-  return { messages, inputTokens };
+  let isEstimated = false;
+  if (inputTokens === 0) { inputTokens = Math.round(chars / 4); isEstimated = true; }
+  return { messages, inputTokens, isEstimated };
 }
 
 export class GenericAgentAdapter implements IAgentAdapter {
@@ -152,6 +155,14 @@ export class GenericAgentAdapter implements IAgentAdapter {
     }
   }
 
+  private parseSession(sessionFile: string): { messages: Array<{ role: 'user' | 'assistant'; content: string }>; inputTokens: number; isEstimated: boolean } {
+    if (this.config.sessionFormat === 'gemini-compatible') {
+      const { messages, totalTokens, isEstimated } = parseGeminiSession(sessionFile);
+      return { messages, inputTokens: totalTokens, isEstimated };
+    }
+    return parseClaudeCompatible(sessionFile);
+  }
+
   async getUsageSnapshot(): Promise<UsageSnapshot> {
     const empty: UsageSnapshot = {
       agentId: this.id, isRunning: false, contextUsedPercent: 0,
@@ -165,7 +176,7 @@ export class GenericAgentAdapter implements IAgentAdapter {
     const sessionFile = findLatestSessionFile(this.config.sessionDir);
     if (!sessionFile) return { ...empty, isRunning: await this.isRunning() };
 
-    const { inputTokens } = parseClaudeCompatible(sessionFile);
+    const { inputTokens, isEstimated } = this.parseSession(sessionFile);
     const isRunning = await this.isRunning();
     return {
       agentId: this.id,
@@ -173,6 +184,7 @@ export class GenericAgentAdapter implements IAgentAdapter {
       contextUsedPercent: (inputTokens / this.config.contextWindow) * 100,
       inputTokensUsed: inputTokens,
       contextWindowTokens: this.config.contextWindow,
+      isEstimated,
     };
   }
 
@@ -182,8 +194,12 @@ export class GenericAgentAdapter implements IAgentAdapter {
     const sessionFile = findLatestSessionFile(this.config.sessionDir);
     if (!sessionFile) return null;
 
-    const { messages, inputTokens } = parseClaudeCompatible(sessionFile);
+    const { messages, inputTokens } = this.parseSession(sessionFile);
     return { messages, cwd: this.cwd, inputTokensUsed: inputTokens, contextWindowTokens: this.config.contextWindow };
+  }
+
+  buildNonInteractiveArgs(prompt: string): string[] {
+    return ['--print', prompt];
   }
 
   buildLaunchArgs(packet: HandoffPacket): LaunchArgs {

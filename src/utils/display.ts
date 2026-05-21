@@ -44,13 +44,62 @@ export function printHandoffMenu(models: string[], forced = false): void {
   console.log('');
 }
 
-export function printHandoffStart(toModel: string): void {
-  process.stdout.write(chalk.dim(`\n  Compressing session...`));
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+export function startHandoffProgress(): {
+  onProgress: (chars: number) => void;
+  finish: (elapsedMs: number) => void;
+} {
+  let frame = 0;
+  let chars = 0;
+  const interval = setInterval(() => {
+    const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+    frame++;
+    const tokens = Math.round(chars / 4);
+    const tokenStr = tokens > 0 ? ` ${tokens} tokens` : '';
+    process.stdout.write(chalk.dim(`\r  Compressing session... ${spinner}${tokenStr}   `));
+  }, 100);
+
+  return {
+    onProgress(c: number) { chars = c; },
+    finish(elapsedMs: number) {
+      clearInterval(interval);
+      process.stdout.write(
+        chalk.dim('\r  Compressing session... ') +
+        chalk.green(`done (${(elapsedMs / 1000).toFixed(1)}s)`) +
+        '          \n'
+      );
+    },
+  };
 }
 
-export function printHandoffDone(toModel: string, elapsedMs: number): void {
-  console.log(chalk.green(` done (${(elapsedMs / 1000).toFixed(1)}s)`));
-  console.log(chalk.dim(`  Switching to ${toModel}...\n`));
+export function printHandoffSummary(summary: {
+  ultimateGoal: string;
+  completedWork: string;
+  nextStep: string;
+  filesModified: string[];
+  blockers: string[];
+}): void {
+  const W = 54;
+  const line = (label: string, value: string) => {
+    const maxVal = W - label.length - 2;
+    const truncated = value.length > maxVal ? value.slice(0, maxVal - 1) + '…' : value;
+    console.log(`  │ ${chalk.dim(label)} ${truncated}`);
+  };
+
+  console.log('');
+  console.log(chalk.bold('  ┌─ Handoff summary ') + chalk.dim('─'.repeat(W - 18) + '┐'));
+  line('Goal:     ', summary.ultimateGoal);
+  line('Done:     ', summary.completedWork);
+  line('Next:     ', summary.nextStep);
+  if (summary.filesModified.length > 0) {
+    line('Files:    ', summary.filesModified.join(', '));
+  }
+  if (summary.blockers.length > 0) {
+    line('Blockers: ', summary.blockers.join('; '));
+  }
+  console.log(chalk.dim('  └' + '─'.repeat(W + 2) + '┘'));
+  console.log('');
 }
 
 export function printSwitchBanner(modelId: string, goal: string): void {
@@ -67,13 +116,22 @@ export function printDashboardHeader(): void {
   console.log(chalk.dim('  ' + '─'.repeat(50)));
 }
 
+export function printStatusHeader(): void {
+  console.log('');
+  console.log(chalk.bold('  MACC') + chalk.dim(' — Agent Status'));
+  console.log('');
+  console.log(chalk.dim('  Agent            Status       Context'));
+  console.log(chalk.dim('  ' + '─'.repeat(50)));
+}
+
 export function printAgentRow(
   name: string,
   installed: boolean,
   running: boolean,
   usagePercent: number,
   inputTokens: number,
-  contextWindow: number
+  contextWindow: number,
+  isEstimated = false,
 ): void {
   const nameCol = name.padEnd(16);
 
@@ -96,21 +154,35 @@ export function printAgentRow(
     contextCol = chalk.dim(`${bar} ${pct}`);
   }
 
+  const estTag = isEstimated ? chalk.dim(' ~est') : '';
   const detail = running && inputTokens > 0
-    ? chalk.dim(` (${inputTokens.toLocaleString()} / ${contextWindow.toLocaleString()})`)
+    ? chalk.dim(` (${inputTokens.toLocaleString()} / ${contextWindow.toLocaleString()})`) + estTag
     : '';
 
   console.log(`  ${nameCol} ${statusCol} ${contextCol}${detail}`);
 }
 
 export function printHelp(): void {
+  const row = (cmd: string, desc: string, wip = false) => {
+    const tag = wip ? chalk.yellow(' [wip]') : '';
+    console.log(`  ${chalk.bold(cmd.padEnd(12))} ${chalk.dim(desc)}${tag}`);
+  };
   console.log('');
-  console.log(chalk.bold('  Commands:'));
-  console.log('  /status    — show token usage breakdown');
-  console.log('  /switch    — manually trigger model switch');
-  console.log('  /compress  — compress context without switching');
-  console.log('  /model     — show current model');
-  console.log('  /history   — show past handoffs');
-  console.log('  /help      — this message');
+  console.log(chalk.bold('  In-session commands') + chalk.dim(' (type with or without /)'));
+  console.log('');
+  row('status',   'Show context usage % and current model');
+  row('model',    'Show which AI model is currently active');
+  row('switch',   'Switch to a different AI model and carry over context');
+  row('compress', 'Shrink context window to keep chatting without switching', true);
+  row('history',  'Show past model switches and handoffs this session', true);
+  row('help',     'Show this message');
+  console.log('');
+  console.log(chalk.bold('  Terminal commands') + chalk.dim(' (run in a new terminal window)'));
+  console.log('');
+  row('start',    'Launch an agent CLI; auto-switches when context fills up');
+  row('watch',    'Live dashboard — monitors all agent context in real time');
+  row('switch',   'Signal a running session to switch agents');
+  row('handoff',  'Compress session and continue in a different agent');
+  row('agent',    'Manage custom agents (add / list / remove)');
   console.log('');
 }

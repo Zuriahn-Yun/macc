@@ -76,8 +76,8 @@ function parseQoderSession(filePath: string): {
     } catch { /* skip malformed lines */ }
   }
 
-  // Qoder doesn't populate token counts — estimate from characters
-  const inputTokens = Math.round(chars * 1.3);
+  // Qoder doesn't populate token counts — estimate from characters (~4 chars/token)
+  const inputTokens = Math.round(chars / 4);
   return { messages, inputTokens };
 }
 
@@ -115,6 +115,7 @@ export class QodoAdapter implements IAgentAdapter {
       contextUsedPercent: (inputTokens / CONTEXT_WINDOW) * 100,
       inputTokensUsed: inputTokens,
       contextWindowTokens: CONTEXT_WINDOW,
+      isEstimated: true,
     };
   }
 

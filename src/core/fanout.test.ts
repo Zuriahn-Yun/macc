@@ -34,6 +34,7 @@ function makeAdapter(messages: SessionContext['messages'] = []): IAgentAdapter {
       contextWindowTokens: 200_000,
     } satisfies SessionContext),
     buildLaunchArgs: vi.fn().mockReturnValue({ args: ['prompt'] }),
+    buildNonInteractiveArgs: (prompt: string) => ['--print', prompt],
   };
 }
 
@@ -93,7 +94,7 @@ describe('fanOut', () => {
     const backend = makeBackendWithResponses(['{}']);
 
     await expect(
-      fanOut(adapter, backend, { count: 2, commandName: 'claude', printFlag: '--print' })
+      fanOut(adapter, backend, { count: 2 })
     ).resolves.toBeUndefined();
 
     // No backend calls — bailed out before decomposition
@@ -127,7 +128,7 @@ describe('fanOut', () => {
     ];
     const adapter = makeAdapter(messages);
 
-    await fanOut(adapter, backend, { count: 2, commandName: 'claude', printFlag: '--print' });
+    await fanOut(adapter, backend, { count: 2 });
 
     // decompose + synthesize = 2 backend calls
     expect(backend.stream).toHaveBeenCalledTimes(2);
@@ -158,7 +159,7 @@ describe('fanOut', () => {
 
     // Should not throw even when all subagents fail
     await expect(
-      fanOut(adapter, backend, { count: 2, commandName: 'claude', printFlag: '--print' })
+      fanOut(adapter, backend, { count: 2 })
     ).resolves.toBeUndefined();
   });
 
@@ -187,7 +188,7 @@ describe('fanOut', () => {
     const messages: SessionContext['messages'] = [{ role: 'user', content: 'do things' }];
     const adapter = makeAdapter(messages);
 
-    await fanOut(adapter, backend, { count: 2, commandName: 'claude', printFlag: '--print' });
+    await fanOut(adapter, backend, { count: 2 });
 
     // Only 2 subagents should have been spawned despite 4 subtasks returned
     expect(cp.spawn).toHaveBeenCalledTimes(2);
