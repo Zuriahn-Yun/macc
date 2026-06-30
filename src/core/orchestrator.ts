@@ -135,7 +135,10 @@ export async function runWithRotation(
   // SIGUSR1 = manual switch request from "macc switch" command.
   // Kill the child so we regain the terminal and can show the menu.
   let forceSwitch = false;
-  writePid();
+  // Write PID only after confirming the child started — prevents orphaned PID
+  // files when spawn() fails (e.g. binary not found).
+  if (child.pid !== undefined) writePid();
+  child.on('error', () => clearPid());
   const sigusr1Handler = () => {
     forceSwitch = true;
     child.kill('SIGTERM');

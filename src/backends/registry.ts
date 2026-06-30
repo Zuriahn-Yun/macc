@@ -1,6 +1,7 @@
 import type { IModelBackend } from './base.js';
 import { AnthropicBackend } from './anthropic.js';
 import { GeminiBackend } from './gemini.js';
+import { OpenAIBackend } from './openai.js';
 
 const MODEL_MAP: Record<string, () => IModelBackend> = {
   'claude-opus-4-7':    () => new AnthropicBackend('claude-opus-4-7'),
@@ -8,6 +9,8 @@ const MODEL_MAP: Record<string, () => IModelBackend> = {
   'claude-haiku-4-5':   () => new AnthropicBackend('claude-haiku-4-5'),
   'gemini-2.5-pro':     () => new GeminiBackend('gemini-2.5-pro'),
   'gemini-2.0-flash':   () => new GeminiBackend('gemini-2.0-flash'),
+  'gpt-4o':             () => new OpenAIBackend('gpt-4o'),
+  'gpt-4o-mini':        () => new OpenAIBackend('gpt-4o-mini'),
 };
 
 export function getBackend(modelId: string): IModelBackend {

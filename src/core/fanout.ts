@@ -150,7 +150,8 @@ export async function fanOut(
   backend: IModelBackend,
   opts: FanOutOptions,
 ): Promise<void> {
-  const { count, timeoutMs } = opts;
+  const { timeoutMs } = opts;
+  const count = Math.min(Math.max(Math.floor(opts.count), 1), 10);
   const commandName = source.commandName;
 
   // 1. Extract current session context

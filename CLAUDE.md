@@ -51,29 +51,29 @@ When the user selects Qodo (or any provider with `defaultModel === ''`), `runSet
 
 ### BUG-03 — `GenericAgentAdapter.isRunning()` regex can produce false positives
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/adapters/generic.ts` lines 126–135
 **Priority: MEDIUM**
 
 `isRunning()` runs `ps aux` and checks if any line matches `\bcommandName\b`. Short command names (e.g., `r`, `go`, `node`) will match unrelated processes. Also, the guard `!line.includes('macc')` is not sufficient to filter out all parent processes.
 
-**Fix:** Also filter out the current PID and its ancestors. Or require `commandName` to be at least 4 chars and validate during `macc agent add`.
-**Progress:** Nothing done yet.
-**Next:** Add minimum-length validation in the setup wizard, update `isRunning` to exclude lines matching the current process's command.
+**Fix:** Escape regex metacharacters; use word-boundary pattern `(?:^|[\s/])name(?:\s|$)`; exclude own PID (column 1 in `ps aux`).
+**Progress:** Fixed — `isRunning` now escapes the commandName, uses a strict word-boundary pattern, and excludes the current process's PID.
+**Next:** Nothing.
 
 ---
 
 ### BUG-04 — PID file written before `spawn()` succeeds
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/core/orchestrator.ts` lines ~115–125
 **Priority: LOW**
 
 `writePid()` is called before `spawn()`. If the agent binary doesn't exist and spawn throws, the PID file is left pointing at the macc process itself. A subsequent `macc switch` sends SIGUSR1 to the wrong process.
 
-**Fix:** Call `writePid()` after confirming `child.pid` is set (i.e., after the `spawn()` call and a check that `child.pid !== undefined`).
-**Progress:** Nothing done yet.
-**Next:** Move `writePid()` to after spawn, add child error handler that also calls `clearPid()`.
+**Fix:** Call `writePid()` after confirming `child.pid` is set; add `child.on('error', () => clearPid())`.
+**Progress:** Fixed — `writePid()` is now guarded by `if (child.pid !== undefined)` and a child error handler calls `clearPid()`.
+**Next:** Nothing.
 
 ---
 
@@ -107,29 +107,29 @@ When the user selects Qodo (or any provider with `defaultModel === ''`), `runSet
 
 ### BUG-07 — `fanOut` does not validate `count` parameter
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/core/fanout.ts` line 118
 **Priority: LOW**
 
 No upper or lower bound on `count`. Passing `count: 0` would call `decompose` for 0 subtasks, receive an empty array, and call `synthesize` with empty results. Passing `count: 100` would attempt to spawn 100 concurrent subagent processes.
 
-**Fix:** Clamp `count` to `[1, 10]` at the start of `fanOut` and throw if below 1.
-**Progress:** Nothing done yet.
-**Next:** Add `if (count < 1 || count > 10) throw new Error(...)` guard.
+**Fix:** Clamp `count` to `[1, 10]` at the start of `fanOut`.
+**Progress:** Fixed — `count` is clamped with `Math.min(Math.max(Math.floor(opts.count), 1), 10)`.
+**Next:** Nothing.
 
 ---
 
 ### MISSING-01 — OpenAI backend not implemented
 
-**STATUS: OPEN**
+**STATUS: COMPLETED**
 **File:** `src/backends/registry.ts` — `gpt-4o` referenced but no `src/backends/openai.ts`
 **Priority: MEDIUM**
 
 The `openai` npm package is already in `dependencies`. The backend needs to implement `IModelBackend` (stream, isAvailable, token tracking). Context window: gpt-4o = 128k.
 
 **Fix:** Create `src/backends/openai.ts` implementing `IModelBackend`, add entries to `MODEL_MAP` in `registry.ts`, restore `'gpt-4o'` to `DEFAULTS.handoffOrder`.
-**Progress:** Nothing done yet.
-**Next:** Implement `src/backends/openai.ts`, add unit tests for the backend, update registry.
+**Progress:** Implemented — `src/backends/openai.ts` uses `openai` SDK with streaming + `include_usage: true`. `gpt-4o` (128k) and `gpt-4o-mini` (128k) registered in `MODEL_MAP`. `gpt-4o` restored to `DEFAULTS.handoffOrder`. 13 tests added in `src/backends/openai.test.ts`.
+**Next:** Add `OPENAI_API_KEY` instructions to README/setup wizard (currently only Claude and Google are guided).
 
 ---
 
