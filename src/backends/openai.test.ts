@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Expose the mock stream fn so individual tests can control its return value.
-const mockChatStream = vi.fn();
+const mockChatCreate = vi.fn();
 
 vi.mock('openai', () => {
   return {
     default: class MockOpenAI {
-      chat = { completions: { stream: mockChatStream } };
+      chat = { completions: { create: mockChatCreate } };
     },
   };
 });
@@ -95,7 +95,7 @@ describe('OpenAIBackend', () => {
 
   it('stream collects text chunks and returns token usage', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
-    mockChatStream.mockReturnValue(asyncIter(makeChunks(['Hello', ', ', 'world'])));
+    mockChatCreate.mockReturnValue(asyncIter(makeChunks(['Hello', ', ', 'world'])));
 
     const { OpenAIBackend } = await import('./openai.js');
     const backend = new OpenAIBackend('gpt-4o');
@@ -120,7 +120,7 @@ describe('OpenAIBackend', () => {
   it('stream includes system prompt as first message', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
     let capturedMessages: unknown[] = [];
-    mockChatStream.mockImplementation(({ messages }: { messages: unknown[] }) => {
+    mockChatCreate.mockImplementation(({ messages }: { messages: unknown[] }) => {
       capturedMessages = messages;
       return asyncIter(makeChunks(['ok']));
     });
@@ -145,7 +145,7 @@ describe('OpenAIBackend', () => {
       { choices: [{ delta: { content: undefined } }], usage: null },
       { choices: [{ delta: {} }], usage: { prompt_tokens: 10, completion_tokens: 5 } },
     ];
-    mockChatStream.mockReturnValue(asyncIter(chunks));
+    mockChatCreate.mockReturnValue(asyncIter(chunks));
 
     const { OpenAIBackend } = await import('./openai.js');
     const backend = new OpenAIBackend('gpt-4o');

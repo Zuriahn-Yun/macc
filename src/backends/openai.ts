@@ -42,9 +42,10 @@ export class OpenAIBackend implements IModelBackend {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const stream = client.chat.completions.stream({
+    const stream = await client.chat.completions.create({
       model: this.modelId,
       messages: apiMessages,
+      stream: true,
       stream_options: { include_usage: true },
     });
 
