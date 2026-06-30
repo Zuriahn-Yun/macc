@@ -15,7 +15,7 @@ const DEFAULTS: MaccConfig = {
   warningThresholdPercent: 90,
   autoPromptThresholdPercent: 98,
   compressionModel: 'claude-haiku-4-5',
-  handoffOrder: ['gemini-2.5-pro', 'claude-sonnet-4-6', 'gpt-4o'],
+  handoffOrder: ['gemini-2.5-pro', 'claude-sonnet-4-6'],
 };
 
 export async function loadConfig(): Promise<MaccConfig> {

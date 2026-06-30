@@ -320,7 +320,14 @@ export async function watchAll(
   let signalDone: (() => void) | undefined;
   const donePromise = new Promise<void>(resolve => { signalDone = resolve; });
 
+  let isRedrawing = false;
+  let hasFiredHandoff = false;
+
   const redraw = async () => {
+    // Skip if a redraw or handoff is already in progress — prevents concurrent
+    // redraws from corrupting the terminal and triggering duplicate handoffs.
+    if (isRedrawing || hasFiredHandoff) return;
+    isRedrawing = true;
     process.stdout.write('\x1b[H\x1b[J');
     printDashboardHeader();
 
@@ -334,7 +341,9 @@ export async function watchAll(
         printAgentRow(adapter.id, true, snap.isRunning, snap.contextUsedPercent, snap.inputTokensUsed, snap.contextWindowTokens, snap.isEstimated);
 
         if (snap.isRunning && snap.contextUsedPercent >= 98) {
+          hasFiredHandoff = true;
           clearInterval(poll);
+          isRedrawing = false;
           console.log('');
           printWarning(snap.contextUsedPercent, snap.inputTokensUsed, snap.contextWindowTokens);
           const otherTargets = installed.filter(a => a.id !== adapter.id);
@@ -350,6 +359,7 @@ export async function watchAll(
         printAgentRow(adapter.id, true, false, 0, 0, adapter.getContextWindowSize());
       }
     }
+    isRedrawing = false;
   };
 
   process.stdout.write('\x1b[2J');

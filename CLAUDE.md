@@ -23,29 +23,29 @@ Update the `STATUS` line and add a note whenever work is done on that item.
 
 ### BUG-01 — `gpt-4o` in default handoff order crashes at runtime
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/utils/config.ts` line 18, `src/backends/registry.ts`
 **Priority: HIGH — affects all users who haven't set a custom `handoffOrder`**
 
 `DEFAULTS.handoffOrder` includes `'gpt-4o'` but `MODEL_MAP` in `registry.ts` has no entry for it. Any handoff that attempts to use `gpt-4o` calls `getBackend('gpt-4o')` which throws `Unknown model: gpt-4o`. Since the OpenAI backend is not yet implemented, the fix is to remove `'gpt-4o'` from the default `handoffOrder` until the backend exists.
 
 **Fix:** Remove `'gpt-4o'` from `DEFAULTS.handoffOrder` in `src/utils/config.ts`.
-**Progress:** Nothing done yet.
-**Next:** One-line change in `config.ts`, add a test that `loadConfig()` defaults contain only models that exist in `MODEL_MAP`.
+**Progress:** Fixed — removed `gpt-4o` from defaults. Default order is now `['gemini-2.5-pro', 'claude-sonnet-4-6']`.
+**Next:** Restore when OpenAI backend (MISSING-01) is implemented.
 
 ---
 
 ### BUG-02 — Infinite recursion in setup wizard when unsupported provider is chosen
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/commands/setup.ts` lines 59–64
 **Priority: HIGH**
 
 When the user selects Qodo (or any provider with `defaultModel === ''`), `runSetupWizard()` calls itself recursively. Each call creates and closes a readline interface but adds a stack frame. Repeated Qodo selections will stack overflow (`Maximum call stack size exceeded`).
 
 **Fix:** Replace the recursive call with a loop (`while (!selectedBackend)`) inside `runSetupWizard` so unsupported selections restart the prompt without growing the stack.
-**Progress:** Nothing done yet.
-**Next:** Refactor `runSetupWizard` to use a while-loop, add a test that selecting Qodo twice then Claude resolves without error.
+**Progress:** Fixed — `runSetupWizard` now uses a `while (true)` loop with `continue` for unsupported providers instead of recursion.
+**Next:** Nothing.
 
 ---
 
@@ -79,29 +79,29 @@ When the user selects Qodo (or any provider with `defaultModel === ''`), `runSet
 
 ### BUG-05 — `runSubagent` in fanout has no timeout
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/core/fanout.ts` lines 88–113
 **Priority: MEDIUM**
 
 `runSubagent` wraps `spawn` in a Promise that only resolves on `close`. If a subagent hangs (e.g., waiting for user input), `fanOut` hangs forever with no way to cancel.
 
 **Fix:** Add a configurable timeout (default 5 minutes) that kills the child process and rejects with a timeout error.
-**Progress:** Nothing done yet.
-**Next:** Wrap the Promise with a `setTimeout` that calls `child.kill()` and rejects. Add a `timeoutMs` option to `FanOutOptions`.
+**Progress:** Fixed — `runSubagent` now has a `settled` flag and a `setTimeout(timeoutMs)` that calls `child.kill('SIGTERM')` and rejects. `FanOutOptions` has a new optional `timeoutMs` field (defaults to 300,000ms).
+**Next:** Nothing.
 
 ---
 
 ### BUG-06 — `watchAll` redraw race condition
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/core/orchestrator.ts` lines ~290–345
 **Priority: MEDIUM — contributes to dashboard reliability issues**
 
 `redraw` is async and called on an interval. If `redraw` takes longer than `POLL_INTERVAL_MS` (5 seconds), two redraws can run concurrently. The second `clearInterval(poll)` call when a 98% threshold is hit may not prevent an already-queued redraw from firing. This causes garbled terminal output and duplicate `triggerHandoff` calls.
 
 **Fix:** Add a `let isRedrawing = false` guard at the top of the `redraw` function. Skip the redraw if one is already in progress.
-**Progress:** Nothing done yet.
-**Next:** Add `isRedrawing` guard, add `hasFiredHandoff` flag to prevent duplicate handoff triggers.
+**Progress:** Fixed — added `isRedrawing` and `hasFiredHandoff` flags. Redraw bails early if either is true; `hasFiredHandoff` is set before `triggerHandoff` so no interval tick can re-enter.
+**Next:** Nothing. See TEST-05 for dashboard test coverage (deferred until after BUG-06 fix — now unblocked).
 
 ---
 
@@ -149,15 +149,15 @@ Qodo adapter and session parsing work fine; users just can't log in through the 
 
 ### MISSING-03 — `src/repl/session.ts` is dead code
 
-**STATUS: OPEN**
+**STATUS: FIXED**
 **File:** `src/repl/session.ts` (227 lines)
 **Priority: LOW**
 
 This file is a REPL loop left over from early architecture. It is never imported or called. The orchestrator replaced it.
 
 **Fix:** Delete the file. Verify no imports reference it.
-**Progress:** Nothing done yet.
-**Next:** `grep -r 'repl/session' src/` to confirm no imports, then delete.
+**Progress:** Confirmed no imports, deleted `src/repl/session.ts` and the now-empty `src/repl/` directory.
+**Next:** Nothing.
 
 ---
 
