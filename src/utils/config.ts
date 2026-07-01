@@ -8,6 +8,7 @@ export interface MaccConfig {
   autoPromptThresholdPercent: number;
   compressionModel: string;
   handoffOrder: string[];
+  licenseKey?: string;
 }
 
 const DEFAULTS: MaccConfig = {

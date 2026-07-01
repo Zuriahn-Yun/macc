@@ -1,5 +1,7 @@
 # MACC — Multi-Agent Coding Client
 
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/zuriahn-yun?style=flat&label=Sponsor&logo=github)](https://github.com/sponsors/zuriahn-yun)
+
 MACC is an AI coding assistant CLI that isn't locked to one model. It calls AI APIs directly, streams responses to your terminal, and tracks token usage in real time. When you're near the context limit, it compresses the session and seamlessly hands it off to a fresh model — same work, no lost progress.
 
 ## Why MACC?
@@ -46,6 +48,7 @@ MACC uses **your existing CLI logins** — no API keys to copy, paste, or rotate
 |---|---|
 | Anthropic / Claude | `claude auth login` (Claude CLI) |
 | Google / Gemini | `gcloud auth application-default login` |
+| OpenAI | Set `OPENAI_API_KEY` environment variable |
 | Qodo | Coming soon |
 
 ## Usage
@@ -100,6 +103,31 @@ The compression extracts the goal, key decisions, files touched, and pending tas
 |---|---|---|
 | Anthropic | claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5 | 200k |
 | Google | gemini-2.5-pro, gemini-2.0-flash | 1M |
+| OpenAI | gpt-4o, gpt-4o-mini, o1, o1-mini | 128k–200k |
+
+## Pricing
+
+| | Free | Pro ($49 one-time) |
+|---|---|---|
+| Context handoff | Unlimited | Unlimited |
+| Supported agents | All | All |
+| Fan-out parallelism | Up to 2 agents | Up to 10 agents |
+| SQLite session history | — | Coming soon |
+| Priority support | — | Discord channel |
+
+**Get a Pro license:** [polar.sh/yunzuriahn/macc](https://polar.sh/yunzuriahn/macc)
+
+After purchase, add your license key to `~/.macc/config.json`:
+
+```json
+{
+  "licenseKey": "MACC-PRO-XXXXXXXX-YYYYYYYYYYYYYYYYYYYY"
+}
+```
+
+**Support open-source development:** [GitHub Sponsors](https://github.com/sponsors/zuriahn-yun)
+
+---
 
 ## Configuration
 
@@ -110,7 +138,7 @@ The compression extracts the goal, key decisions, files touched, and pending tas
   "defaultModel": "claude-sonnet-4-6",
   "warningThresholdPercent": 90,
   "autoPromptThresholdPercent": 98,
-  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6"]
+  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6", "gpt-4o"]
 }
 ```
 

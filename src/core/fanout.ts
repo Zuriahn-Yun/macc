@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { IAgentAdapter } from '../adapters/base.js';
 import type { IModelBackend, StreamChunk } from '../backends/base.js';
 import type { Message } from '../models/message.js';
+import { isPro } from '../utils/license.js';
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -151,7 +152,18 @@ export async function fanOut(
   opts: FanOutOptions,
 ): Promise<void> {
   const { timeoutMs } = opts;
-  const count = Math.min(Math.max(Math.floor(opts.count), 1), 10);
+  const rawCount = Math.min(Math.max(Math.floor(opts.count), 1), 10);
+
+  // Fan-out with more than 2 parallel agents requires a Pro license.
+  const pro = await isPro();
+  const count = rawCount > 2 && !pro ? 2 : rawCount;
+  if (rawCount > 2 && !pro) {
+    console.log(chalk.yellow(
+      `  Fan-out capped at 2 agents on the free tier.\n` +
+      `  Upgrade to MACC Pro for up to 10 parallel agents → https://polar.sh/yunzuriahn/macc\n`
+    ));
+  }
+
   const commandName = source.commandName;
 
   // 1. Extract current session context

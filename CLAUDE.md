@@ -242,7 +242,7 @@ Only 4 basic tests; no coverage of decomposition failures, synthesis failures, o
 
 ### MONETIZE-01 — Paid tier / hosted SaaS
 
-**STATUS: IDEA**
+**STATUS: OPEN**
 **Priority: HIGH for revenue**
 
 MACC currently requires users to have their own API keys and CLI tools installed. A hosted web version could eliminate this friction.
@@ -265,7 +265,7 @@ MACC currently requires users to have their own API keys and CLI tools installed
 
 ### MONETIZE-02 — npm package / API SDK
 
-**STATUS: IDEA**
+**STATUS: OPEN**
 **Priority: MEDIUM**
 
 MACC is already published as `@yunzuriahn/macc` on npm. Could be productized as a proper SDK.
@@ -287,42 +287,32 @@ MACC is already published as `@yunzuriahn/macc` on npm. Could be productized as 
 
 ### MONETIZE-03 — One-time license for power users
 
-**STATUS: IDEA**
+**STATUS: COMPLETED**
 **Priority: MEDIUM**
 
 Many developers distrust SaaS subscriptions for CLI tools. A one-time purchase model fits the audience.
 
 **Model ideas:**
 - **Free:** Core CLI (MIT, current state)
-- **Pro license ($49 one-time):** Priority model routing, fan-out with >3 agents, SQLite session history, Discord support
-- **Use Polar.sh or Lemon Squeezy** for license key distribution — both have free tiers
+- **Pro license ($49 one-time):** Fan-out with >2 agents (up to 10), SQLite session history, Discord support
+- **Use Polar.sh** for license key distribution
 
-**Gating mechanism:** License key checked at startup against a lightweight license server (or embedded HMAC check for offline use).
+**Gating mechanism:** HMAC-SHA256 offline validation — no server call required. Format: `MACC-PRO-{8-char-id}-{24-char-hmac}`.
 
-**What's needed:**
-- Feature flag system in `src/utils/config.ts` (check license key)
-- Pro-only features: fan-out count >3, session history, custom compression models
-- Landing page with pricing (can be a GitHub README + polar.sh link initially)
-
-**Progress:** Nothing done yet — idea only.
-**Next:** Add license key field to `~/.macc/config.json`, implement HMAC validation, gate fan-out `count > 3` behind it.
+**Progress:** Implemented — `src/utils/license.ts` exports `validateLicense()`, `generateLicenseKey()`, `isPro()`. `MaccConfig` has `licenseKey?: string` field. Fan-out count >2 capped at 2 for free users with upgrade prompt. README updated with pricing table and Polar.sh link. 16 license tests added.
+**Next:** List on Polar.sh at $49, implement key generation endpoint (simple Node.js script using `generateLicenseKey`), add Discord server for Pro supporters.
 
 ---
 
 ### MONETIZE-04 — GitHub Sponsors / Open Collective
 
-**STATUS: IDEA**
+**STATUS: COMPLETED**
 **Priority: LOW — low ceiling but zero development cost**
 
 Given the project is MIT and targets developers, GitHub Sponsors is a natural fit for sustaining open-source development without gating features.
 
-**What's needed:**
-- Enable GitHub Sponsors on the account
-- Add a `FUNDING.yml` to the repo
-- Add a sponsors section to the README
-
-**Progress:** Nothing done yet.
-**Next:** Enable Sponsors, add `.github/FUNDING.yml`, add "Support this project" badge to README.
+**Progress:** Added `.github/FUNDING.yml` pointing to `zuriahn-yun`. Added GitHub Sponsors badge to README header. README now also links sponsors in the Pricing section.
+**Next:** Enable GitHub Sponsors on the account at github.com/sponsors — requires account setup (Stripe connect, profile). Once live, the badge and FUNDING.yml button will auto-activate.
 
 ---
 
