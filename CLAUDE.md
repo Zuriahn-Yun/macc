@@ -229,14 +229,13 @@ Only 4 basic tests; no coverage of decomposition failures, synthesis failures, o
 
 ### TEST-05 — Dashboard (`watchAll`) has zero tests
 
-**STATUS: OPEN**
+**STATUS: COMPLETED**
 **File:** `src/core/orchestrator.ts` — `watchAll` function
-**Priority: LOW — blocked on BUG-06 (race condition fix first)**
 
 `watchAll` requires a full terminal (ANSI escape codes, interval polling, SIGINT handling). Testing it requires careful mocking of `process.stdout.write`, `setInterval`, and `process.once('SIGINT')`.
 
-**Progress:** Nothing done yet — defer until BUG-06 is fixed so tests don't validate buggy behavior.
-**Next:** After BUG-06 fix: mock `getUsageSnapshot`, verify redraw cycle, verify handoff triggers at 98%, verify SIGINT cleans up.
+**Progress:** 4 tests added to `src/core/orchestrator.test.ts`. Key technique: drain microtasks with `for await Promise.resolve()` instead of `runAllTimersAsync()` to avoid triggering the `setInterval` loop with fake timers. Display functions mocked via `vi.mock('../utils/display.js', async importOriginal => ...)`.
+**Next:** Nothing.
 
 ---
 
