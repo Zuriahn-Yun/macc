@@ -1,16 +1,44 @@
 # MACC — Multi-Agent Coding Client
 
+[![npm](https://img.shields.io/npm/v/@yunzuriahn/macc)](https://www.npmjs.com/package/@yunzuriahn/macc)
 [![GitHub Sponsors](https://img.shields.io/github/sponsors/zuriahn-yun?style=flat&label=Sponsor&logo=github)](https://github.com/sponsors/zuriahn-yun)
 
-MACC is an AI coding assistant CLI that isn't locked to one model. It calls AI APIs directly, streams responses to your terminal, and tracks token usage in real time. When you're near the context limit, it compresses the session and seamlessly hands it off to a fresh model — same work, no lost progress.
+**Stop losing your session when Claude Code hits the context limit.**
 
-## Why MACC?
+MACC watches your token usage in real time. When you're at 98%, it compresses your entire session — goal, decisions, files touched, what's next — and hands it off to a fresh agent. You keep coding. The new agent already knows everything.
 
-Most AI coding assistants (Claude Code, Gemini CLI, Copilot) are locked to one provider. MACC lets you:
+Works with Claude Code, Gemini CLI, GPT-4o, and Codex. Runs from your terminal in 30 seconds.
 
-- **Start with Claude**, automatically compress and **continue with Gemini** when you hit the limit — no re-explaining context
-- **Use any supported model** from the same interface with a consistent UX
-- **Own your session** — MACC talks directly to APIs, so token counts are exact and nothing is hidden
+```bash
+npm install -g @yunzuriahn/macc && macc
+```
+
+---
+
+## How it works
+
+```
+  ⚠  Context at 98% — 196,000 / 200,000 tokens used.
+
+  Compress and continue with:
+  [1] gemini-cli — recommended  (1M ctx, 0% used)
+  [2] claude-code               (200k ctx, new session)
+
+> 1
+
+  Compressing session... done (2.3s)
+
+  ┌─ Handoff summary ─────────────────────────────────┐
+  │ Goal:   Fix auth middleware and write tests        │
+  │ Done:   Reviewed auth.ts, found JWT bug on line 42 │
+  │ Next:   Write failing test, fix validate()         │
+  │ Files:  src/auth.ts, src/middleware.ts             │
+  └───────────────────────────────────────────────────┘
+
+  Starting gemini... Session context loaded.
+```
+
+The new agent starts with full context. No re-explaining, no lost progress.
 
 ## Install
 
