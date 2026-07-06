@@ -18,6 +18,7 @@ import {
   printStatusHeader,
   printAgentRow,
 } from '../utils/display.js';
+import { isCreditsExhaustedOutput, printCreditsExhausted, printCreditsExhaustedNoTarget } from '../utils/errors.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const MACC_DIR = path.join(os.homedir(), '.macc');
@@ -129,8 +130,15 @@ export async function runWithRotation(
   // Print the status table once before handing off the terminal.
   await printStatusTable(agent, targets);
 
-  // Spawn the agent with the full terminal handed to it.
-  const child = spawn(agent.commandName, launchArgs, { stdio: 'inherit' });
+  // Spawn the agent. Inherit stdin + stdout so the terminal is fully theirs.
+  // Pipe stderr so MACC can detect credit-exhaustion errors; forward every
+  // byte to process.stderr so the user still sees all error output.
+  let stderrBuffer = '';
+  const child = spawn(agent.commandName, launchArgs, { stdio: ['inherit', 'inherit', 'pipe'] });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrBuffer += chunk.toString();
+    process.stderr.write(chunk);
+  });
 
   // SIGUSR1 = manual switch request from "macc switch" command.
   // Kill the child so we regain the terminal and can show the menu.
@@ -158,6 +166,9 @@ export async function runWithRotation(
   process.off('SIGUSR1', sigusr1Handler);
   clearPid();
 
+  // Detect credit exhaustion from the agent's stderr output.
+  const creditExhausted = (child.exitCode !== 0) && isCreditsExhaustedOutput(stderrBuffer);
+
   // Re-read context after exit for accuracy.
   const snap = await agent.getUsageSnapshot().catch(() => lastSnapshot);
   const pct = snap?.contextUsedPercent ?? 0;
@@ -168,7 +179,9 @@ export async function runWithRotation(
 
   console.log(''); // newline after agent's terminal output
 
-  if (pct >= 85) {
+  if (creditExhausted) {
+    // Skip context % message — the credit error is already visible in stderr.
+  } else if (pct >= 85) {
     printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
   } else {
     console.log(chalk.dim(`  Session ended. Context was at ${pct.toFixed(0)}%.`));
@@ -177,11 +190,19 @@ export async function runWithRotation(
   // Include the current agent in the menu so the user can return to it.
   const allTargets = [...targets, agent];
 
-  // Refresh the dashboard before showing the menu.
-  await printStatusTable(agent, targets);
+  // Refresh the dashboard before showing the menu (skip on auto-switch).
+  if (!creditExhausted) await printStatusTable(agent, targets);
 
-  // Pick the next agent — either from a "macc switch <id>" file or via interactive menu.
+  // Pick the next agent — auto on credit exhaustion, interactive otherwise.
   const target = await (async (): Promise<IAgentAdapter | null> => {
+    // Credit exhaustion: automatically pick the first available other agent.
+    if (creditExhausted) {
+      const autoTarget = targets[0] ?? null;
+      if (!autoTarget) { printCreditsExhaustedNoTarget(agent.id); return null; }
+      printCreditsExhausted(agent.id, autoTarget.id);
+      return autoTarget;
+    }
+
     if (fs.existsSync(SWITCH_TARGET_FILE)) {
       const requestedId = fs.readFileSync(SWITCH_TARGET_FILE, 'utf8').trim();
       fs.unlinkSync(SWITCH_TARGET_FILE);
@@ -230,11 +251,14 @@ export async function runWithRotation(
     return;
   }
 
-  // Give the user a chance to append notes before compression runs.
-  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-  console.log(chalk.dim('  Anything to add to the handoff context? (Enter to skip)'));
-  const extraContext = await new Promise<string>(r => rl2.question(chalk.dim('  > '), r));
-  rl2.close();
+  // On credit-exhausted auto-switch, skip the notes prompt — speed matters.
+  let extraContext = '';
+  if (!creditExhausted) {
+    const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log(chalk.dim('  Anything to add to the handoff context? (Enter to skip)'));
+    extraContext = await new Promise<string>(r => rl2.question(chalk.dim('  > '), r));
+    rl2.close();
+  }
 
   const start = Date.now();
   const progress = startHandoffProgress();

@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { IModelBackend, StreamChunk } from './base.js';
 import type { Message, TokenUsage } from '../models/message.js';
+import { CreditsExhaustedError, isCreditsExhaustedOutput } from '../utils/errors.js';
 
 const CONTEXT_WINDOWS: Record<string, number> = {
   'gpt-4o':       128_000,
@@ -42,21 +43,30 @@ export class OpenAIBackend implements IModelBackend {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const stream = await client.chat.completions.create({
-      model: this.modelId,
-      messages: apiMessages,
-      stream: true,
-      stream_options: { include_usage: true },
-    });
+    try {
+      const stream = await client.chat.completions.create({
+        model: this.modelId,
+        messages: apiMessages,
+        stream: true,
+        stream_options: { include_usage: true },
+      });
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content;
-      if (delta) onChunk({ text: delta, done: false });
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta?.content;
+        if (delta) onChunk({ text: delta, done: false });
 
-      if (chunk.usage) {
-        inputTokens = chunk.usage.prompt_tokens;
-        outputTokens = chunk.usage.completion_tokens;
+        if (chunk.usage) {
+          inputTokens = chunk.usage.prompt_tokens;
+          outputTokens = chunk.usage.completion_tokens;
+        }
       }
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (status === 402 || /insufficient_quota|exceeded.*quota/i.test(msg) || isCreditsExhaustedOutput(msg)) {
+        throw new CreditsExhaustedError('openai', msg);
+      }
+      throw err;
     }
 
     onChunk({ text: '', done: true, usage: { inputTokens, outputTokens } });

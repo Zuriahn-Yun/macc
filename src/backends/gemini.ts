@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import type { IModelBackend, StreamChunk } from './base.js';
 import type { Message, TokenUsage } from '../models/message.js';
 import { readGcloudAccessToken } from '../auth/credentials.js';
+import { CreditsExhaustedError, isCreditsExhaustedOutput } from '../utils/errors.js';
 
 const CONTEXT_WINDOWS: Record<string, number> = {
   'gemini-2.5-pro':    1_048_576,
@@ -79,16 +80,24 @@ export class GeminiBackend implements IModelBackend {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const result = await chat.sendMessageStream({ message: lastMessage.content });
+    try {
+      const result = await chat.sendMessageStream({ message: lastMessage.content });
 
-    for await (const chunk of result) {
-      if (chunk.text) {
-        onChunk({ text: chunk.text, done: false });
+      for await (const chunk of result) {
+        if (chunk.text) {
+          onChunk({ text: chunk.text, done: false });
+        }
+        if (chunk.usageMetadata) {
+          inputTokens = chunk.usageMetadata.promptTokenCount ?? 0;
+          outputTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
+        }
       }
-      if (chunk.usageMetadata) {
-        inputTokens = chunk.usageMetadata.promptTokenCount ?? 0;
-        outputTokens = chunk.usageMetadata.candidatesTokenCount ?? 0;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/RESOURCE_EXHAUSTED|quota.*exceeded|billing/i.test(msg) || isCreditsExhaustedOutput(msg)) {
+        throw new CreditsExhaustedError('google', msg);
       }
+      throw err;
     }
 
     onChunk({ text: '', done: true, usage: { inputTokens, outputTokens } });
