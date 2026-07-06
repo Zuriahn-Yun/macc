@@ -133,26 +133,6 @@ The compression extracts the goal, key decisions, files touched, and pending tas
 | Google | gemini-2.5-pro, gemini-2.0-flash | 1M |
 | OpenAI | gpt-4o, gpt-4o-mini, o1, o1-mini | 128k–200k |
 
-## Pricing
-
-| | Free | Pro ($49 one-time) |
-|---|---|---|
-| Context handoff | Unlimited | Unlimited |
-| Supported agents | All | All |
-| Fan-out parallelism | Up to 2 agents | Up to 10 agents |
-| SQLite session history | — | Coming soon |
-| Priority support | — | Discord channel |
-
-**Get a Pro license:** [polar.sh/yunzuriahn/macc](https://polar.sh/yunzuriahn/macc)
-
-After purchase, add your license key to `~/.macc/config.json`:
-
-```json
-{
-  "licenseKey": "MACC-PRO-XXXXXXXX-YYYYYYYYYYYYYYYYYYYY"
-}
-```
-
 **Support open-source development:** [GitHub Sponsors](https://github.com/sponsors/zuriahn-yun)
 
 ---
