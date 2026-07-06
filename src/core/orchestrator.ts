@@ -18,7 +18,21 @@ import {
   printStatusHeader,
   printAgentRow,
 } from '../utils/display.js';
-import { isCreditsExhaustedOutput, printCreditsExhausted, printCreditsExhaustedNoTarget } from '../utils/errors.js';
+import {
+  detectExitReason,
+  parseResetTime,
+  printUsageLimitHit,
+  printCreditsExhausted,
+  printCreditsExhaustedNoTarget,
+  printNoTargetAvailable,
+} from '../utils/errors.js';
+import {
+  recordAgentPaused,
+  clearAgentPause,
+  getJustRecoveredAgents,
+  getAgentPause,
+  formatResetTime,
+} from '../utils/agent-state.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const MACC_DIR = path.join(os.homedir(), '.macc');
@@ -166,8 +180,9 @@ export async function runWithRotation(
   process.off('SIGUSR1', sigusr1Handler);
   clearPid();
 
-  // Detect credit exhaustion from the agent's stderr output.
-  const creditExhausted = (child.exitCode !== 0) && isCreditsExhaustedOutput(stderrBuffer);
+  // Detect why the agent exited — normal, usage-limit, or credits-exhausted.
+  const exitReason = child.exitCode !== 0 ? detectExitReason(stderrBuffer) : 'normal';
+  const autoSwitch = exitReason !== 'normal';
 
   // Re-read context after exit for accuracy.
   const snap = await agent.getUsageSnapshot().catch(() => lastSnapshot);
@@ -179,8 +194,8 @@ export async function runWithRotation(
 
   console.log(''); // newline after agent's terminal output
 
-  if (creditExhausted) {
-    // Skip context % message — the credit error is already visible in stderr.
+  if (autoSwitch) {
+    // Skip context % message — the error is already visible from stderr.
   } else if (pct >= 85) {
     printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
   } else {
@@ -191,15 +206,39 @@ export async function runWithRotation(
   const allTargets = [...targets, agent];
 
   // Refresh the dashboard before showing the menu (skip on auto-switch).
-  if (!creditExhausted) await printStatusTable(agent, targets);
+  if (!autoSwitch) await printStatusTable(agent, targets);
 
-  // Pick the next agent — auto on credit exhaustion, interactive otherwise.
+  // Check if any previously rate-limited agents are now available again.
+  const allAgentIds = [...targets, agent].map(a => a.id);
+  const justRecovered = getJustRecoveredAgents(allAgentIds);
+  for (const { agentId } of justRecovered) {
+    console.log(chalk.green(`  ✓  ${chalk.bold(agentId)} is available again.`));
+    clearAgentPause(agentId);
+  }
+
+  // Pick the next agent — auto on usage-limit/credit errors, interactive otherwise.
   const target = await (async (): Promise<IAgentAdapter | null> => {
-    // Credit exhaustion: automatically pick the first available other agent.
-    if (creditExhausted) {
+    if (autoSwitch) {
+      const resetAt = exitReason === 'usage-limit' ? parseResetTime(stderrBuffer) : null;
+
+      // Record that this agent is paused so we can notify when it recovers.
+      if (exitReason === 'usage-limit') {
+        recordAgentPaused(agent.id, 'usage-limit', resetAt);
+      }
+
       const autoTarget = targets[0] ?? null;
-      if (!autoTarget) { printCreditsExhaustedNoTarget(agent.id); return null; }
-      printCreditsExhausted(agent.id, autoTarget.id);
+      if (!autoTarget) {
+        exitReason === 'credits-exhausted'
+          ? printCreditsExhaustedNoTarget(agent.id)
+          : printNoTargetAvailable(agent.id);
+        return null;
+      }
+
+      if (exitReason === 'credits-exhausted') {
+        printCreditsExhausted(agent.id, autoTarget.id);
+      } else {
+        printUsageLimitHit(agent.id, autoTarget.id, resetAt);
+      }
       return autoTarget;
     }
 
@@ -223,6 +262,13 @@ export async function runWithRotation(
 
     const menuLabels = allTargets.map(t => {
       const canResume = sessionMap.has(t.id) && t.buildResumeArgs;
+      const pause = getAgentPause(t.id);
+      const wasJustRecovered = justRecovered.some(r => r.agentId === t.id);
+      if (wasJustRecovered) return `${t.id} ✓ back`;
+      if (pause?.resetAt) {
+        const resetDate = new Date(pause.resetAt);
+        if (resetDate > new Date()) return `${t.id} (paused — ${formatResetTime(resetDate)})`;
+      }
       return canResume ? `${t.id} (resume)` : t.id;
     });
     printHandoffMenu(menuLabels, forceSwitch);
@@ -251,9 +297,9 @@ export async function runWithRotation(
     return;
   }
 
-  // On credit-exhausted auto-switch, skip the notes prompt — speed matters.
+  // On auto-switch (usage limit or credits), skip the notes prompt — speed matters.
   let extraContext = '';
-  if (!creditExhausted) {
+  if (!autoSwitch) {
     const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
     console.log(chalk.dim('  Anything to add to the handoff context? (Enter to skip)'));
     extraContext = await new Promise<string>(r => rl2.question(chalk.dim('  > '), r));
