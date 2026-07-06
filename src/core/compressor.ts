@@ -40,11 +40,6 @@ function rawHandoffFallback(
   });
 }
 
-function isRateLimitError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes('429') || msg.includes('rate_limit') || msg.includes('Too Many Requests');
-}
-
 const COMPRESSION_PROMPT = `You are compressing a coding session so it can continue in a new AI model with a fresh context window.
 
 Extract from the conversation below and return ONLY valid JSON matching this exact structure:

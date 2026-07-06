@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import readline from 'node:readline';
+import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
 import { createRequire } from 'node:module';
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -355,7 +356,7 @@ agentCmd
     }
     console.log(chalk.bold('\n  Custom agents:\n'));
     for (const a of agents) {
-      const installed = (() => { try { require('node:child_process').execFileSync('which', [a.commandName], { stdio: 'ignore' }); return true; } catch { return false; } })();
+      const installed = (() => { try { execFileSync('which', [a.commandName], { stdio: 'ignore' }); return true; } catch { return false; } })();
       const status = installed ? chalk.green('✓') : chalk.dim('✗');
       console.log(`  ${status} ${a.displayName.padEnd(18)} ${chalk.dim(a.commandName.padEnd(14))} ${chalk.dim(a.sessionFormat)}`);
     }

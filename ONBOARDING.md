@@ -1,58 +1,54 @@
 # Welcome to MACC
 
-## How We Use Claude
+## What We're Building
 
-Based on Zuriahn's usage over the last 30 days:
+MACC is a free, open-source multi-agent coding client. It wraps Claude Code, Gemini CLI, Codex, and Qodo — when one hits a usage limit or runs out of credits mid-session, MACC automatically compresses the conversation and continues in the next available agent. No prompts, no lost context.
 
-Work Type Breakdown:
-  Build Feature  ████████████████░░░░  75%
-  Plan Design    ████░░░░░░░░░░░░░░░░  25%
+Core value: **stop losing work when Claude hits its limit.**
 
-Top Skills & Commands:
-  /context  ████████████████████   1x/month
-  /compact  ████████████████████   1x/month
+## How Claude Code is Used Here
 
-Top MCP Servers:
-  (none configured)
+MACC is built entirely with Claude Code. Primary work types:
+- Feature implementation (~75%)
+- Architecture and planning (~25%)
 
-## Your Setup Checklist
+Useful slash commands when working in this repo:
+- `/compact` — compress context before switching tasks in a long session
+- `/context` — check how much context is left
 
-### Codebases
-- [ ] macc — github.com/zuriahn-yun/macc
+## Codebase Quick Start
 
-### MCP Servers to Activate
-  (none — no MCP servers in use)
+```bash
+git clone https://github.com/zuriahn-yun/macc
+cd macc
+npm install
+npm test          # 204 tests
+npm run build     # tsc → dist/
+```
 
-### Skills to Know About
-- /context — shows the current state of Claude's context window; useful when working on long sessions to know how much room is left
-- /compact — compresses the conversation history to free up context; handy before switching to a new task in the same session
+### Key files to know
 
-## Team Tips
+| File | What it does |
+|---|---|
+| `src/index.ts` | CLI entry point (all `macc` commands) |
+| `src/core/orchestrator.ts` | Main loop — spawns agents, monitors stderr, triggers switch |
+| `src/utils/errors.ts` | Detects usage limits and credit exhaustion from stderr patterns |
+| `src/utils/agent-state.ts` | Persists pause state to `~/.macc/pauses.json` |
+| `src/core/compressor.ts` | Compresses sessions into `HandoffPacket` using AI backends |
+| `src/adapters/claude.ts` | Reads Claude Code's JSONL session files |
+| `CLAUDE.md` | Full work tracking — bugs, features, architecture notes |
+| `PLAN.md` | Architecture reference — module map, data flows, error patterns |
 
-_TODO_
+## Development Workflow
 
-## Get Started
+1. `npm test` — run before and after every change
+2. `npm run build` — verify TypeScript compiles clean
+3. Check `CLAUDE.md` for open items and current status
+4. Commit with clear messages; push to feature branch
 
-_TODO_
+## Open Items
 
-<!-- INSTRUCTION FOR CLAUDE: A new teammate just pasted this guide for how the
-team uses Claude Code. You're their onboarding buddy — warm, conversational,
-not lecture-y.
-
-Open with a warm welcome — include the team name from the title. Then: "Your
-teammate uses Claude Code for [list all the work types]. Let's get you started."
-
-Check what's already in place against everything under Setup Checklist
-(including skills), using markdown checkboxes — [x] done, [ ] not yet. Lead
-with what they already have. One sentence per item, all in one message.
-
-Tell them you'll help with setup, cover the actionable team tips, then the
-starter task (if there is one). Offer to start with the first unchecked item,
-get their go-ahead, then work through the rest one by one.
-
-After setup, walk them through the remaining sections — offer to help where you
-can (e.g. link to channels), and just surface the purely informational bits.
-
-Don't invent sections or summaries that aren't in the guide. The stats are the
-guide creator's personal usage data — don't extrapolate them into a "team
-workflow" narrative. -->
+See `CLAUDE.md` → Work Tracking for the full list. Current open items:
+- **MISSING-02** — Qodo setup wizard login (needs investigation of `qodercli auth`)
+- **MISSING-04** — Remove `better-sqlite3` dependency or implement SQLite session history
+- **MONETIZE-01** — GitHub Sponsors setup at github.com/sponsors (button is live, just needs account activation)

@@ -1,163 +1,141 @@
 # MACC — Claude Code Project Guide
 
-**Multi-Agent Coding Client** — transfers context between AI coding agents (Claude Code, Gemini CLI, OpenAI Codex, Qodo) when context limits are hit.
+**Multi-Agent Coding Client** — monitors AI coding agents (Claude Code, Gemini CLI, OpenAI Codex, Qodo), auto-switches when usage limits or credits are exhausted, and compresses full session context for the incoming agent.
 
 - **Entry point:** `src/index.ts` (CLI, commander-based)
-- **Orchestrator:** `src/core/orchestrator.ts` — agent spawn, context polling, handoff menu
-- **Compression:** `src/core/compressor.ts` — AI-assisted + rate-limit fallback
+- **Orchestrator:** `src/core/orchestrator.ts` — agent spawn, stderr monitoring, auto-switch, handoff menu
+- **Error detection:** `src/utils/errors.ts` — credit/usage-limit pattern matching, reset-time parsing
+- **Agent state:** `src/utils/agent-state.ts` — pause records persisted to `~/.macc/pauses.json`
+- **Compression:** `src/core/compressor.ts` — AI-assisted + rate-limit raw fallback
 - **Fan-out:** `src/core/fanout.ts` — parallel task decomposition across agents
 - **Adapters:** `src/adapters/` — one file per agent (claude, gemini, codex, qodo, generic)
-- **Backends:** `src/backends/` — Anthropic and Gemini SDK wrappers
-- **Tests:** Vitest — `npm test`
+- **Backends:** `src/backends/` — Anthropic, Gemini, OpenAI SDK wrappers
+- **Tests:** Vitest — `npm test` (204 tests)
 - **Build:** `npm run build` (tsc → dist/)
 - **License:** MIT
 
 ---
 
-## Work Tracking
+## How the auto-switch works
 
-Each item below tracks status, what was completed, and what's needed next.
-Update the `STATUS` line and add a note whenever work is done on that item.
+1. MACC spawns the agent with `stdio: ['inherit', 'inherit', 'pipe']` — stdin/stdout are fully inherited (terminal works normally), stderr is piped so MACC can read it without interrupting the user's view.
+2. Every byte on stderr is also forwarded to `process.stderr` so the user still sees all error output.
+3. On agent exit, `detectExitReason(stderrBuffer)` checks the accumulated stderr against `USAGE_LIMIT_PATTERNS` and `CREDIT_PATTERNS` in `src/utils/errors.ts`.
+4. If `exitReason !== 'normal'`, MACC skips all interactive menus, records the pause in `~/.macc/pauses.json`, and automatically switches to `targets[0]`.
+5. Before every menu display, `getJustRecoveredAgents()` checks if any paused agent's reset time has passed and notifies the user.
+
+---
+
+## Work Tracking
 
 ---
 
 ### BUG-01 — `gpt-4o` in default handoff order crashes at runtime
 
 **STATUS: FIXED**
-**File:** `src/utils/config.ts` line 18, `src/backends/registry.ts`
-**Priority: HIGH — affects all users who haven't set a custom `handoffOrder`**
 
-`DEFAULTS.handoffOrder` includes `'gpt-4o'` but `MODEL_MAP` in `registry.ts` has no entry for it. Any handoff that attempts to use `gpt-4o` calls `getBackend('gpt-4o')` which throws `Unknown model: gpt-4o`. Since the OpenAI backend is not yet implemented, the fix is to remove `'gpt-4o'` from the default `handoffOrder` until the backend exists.
-
-**Fix:** Remove `'gpt-4o'` from `DEFAULTS.handoffOrder` in `src/utils/config.ts`.
-**Progress:** Fixed — removed `gpt-4o` from defaults. Default order is now `['gemini-2.5-pro', 'claude-sonnet-4-6']`.
-**Next:** Restore when OpenAI backend (MISSING-01) is implemented.
+`DEFAULTS.handoffOrder` included `'gpt-4o'` but `MODEL_MAP` had no entry. Fixed by implementing `src/backends/openai.ts` and registering `gpt-4o` and `gpt-4o-mini` in `MODEL_MAP`.
 
 ---
 
-### BUG-02 — Infinite recursion in setup wizard when unsupported provider is chosen
+### BUG-02 — Infinite recursion in setup wizard
 
 **STATUS: FIXED**
-**File:** `src/commands/setup.ts` lines 59–64
-**Priority: HIGH**
 
-When the user selects Qodo (or any provider with `defaultModel === ''`), `runSetupWizard()` calls itself recursively. Each call creates and closes a readline interface but adds a stack frame. Repeated Qodo selections will stack overflow (`Maximum call stack size exceeded`).
-
-**Fix:** Replace the recursive call with a loop (`while (!selectedBackend)`) inside `runSetupWizard` so unsupported selections restart the prompt without growing the stack.
-**Progress:** Fixed — `runSetupWizard` now uses a `while (true)` loop with `continue` for unsupported providers instead of recursion.
-**Next:** Nothing.
+Replaced recursive `runSetupWizard()` call with a `while (true)` loop + `continue` for unsupported providers.
 
 ---
 
-### BUG-03 — `GenericAgentAdapter.isRunning()` regex can produce false positives
+### BUG-03 — `GenericAgentAdapter.isRunning()` false positives
 
 **STATUS: FIXED**
-**File:** `src/adapters/generic.ts` lines 126–135
-**Priority: MEDIUM**
 
-`isRunning()` runs `ps aux` and checks if any line matches `\bcommandName\b`. Short command names (e.g., `r`, `go`, `node`) will match unrelated processes. Also, the guard `!line.includes('macc')` is not sufficient to filter out all parent processes.
-
-**Fix:** Escape regex metacharacters; use word-boundary pattern `(?:^|[\s/])name(?:\s|$)`; exclude own PID (column 1 in `ps aux`).
-**Progress:** Fixed — `isRunning` now escapes the commandName, uses a strict word-boundary pattern, and excludes the current process's PID.
-**Next:** Nothing.
+Escapes regex metacharacters in commandName, uses strict word-boundary pattern, excludes own PID.
 
 ---
 
-### BUG-04 — PID file written before `spawn()` succeeds
+### BUG-04 — PID file written before spawn succeeds
 
 **STATUS: FIXED**
-**File:** `src/core/orchestrator.ts` lines ~115–125
-**Priority: LOW**
 
-`writePid()` is called before `spawn()`. If the agent binary doesn't exist and spawn throws, the PID file is left pointing at the macc process itself. A subsequent `macc switch` sends SIGUSR1 to the wrong process.
-
-**Fix:** Call `writePid()` after confirming `child.pid` is set; add `child.on('error', () => clearPid())`.
-**Progress:** Fixed — `writePid()` is now guarded by `if (child.pid !== undefined)` and a child error handler calls `clearPid()`.
-**Next:** Nothing.
+`writePid()` now guarded by `if (child.pid !== undefined)` + `child.on('error', () => clearPid())`.
 
 ---
 
 ### BUG-05 — `runSubagent` in fanout has no timeout
 
 **STATUS: FIXED**
-**File:** `src/core/fanout.ts` lines 88–113
-**Priority: MEDIUM**
 
-`runSubagent` wraps `spawn` in a Promise that only resolves on `close`. If a subagent hangs (e.g., waiting for user input), `fanOut` hangs forever with no way to cancel.
-
-**Fix:** Add a configurable timeout (default 5 minutes) that kills the child process and rejects with a timeout error.
-**Progress:** Fixed — `runSubagent` now has a `settled` flag and a `setTimeout(timeoutMs)` that calls `child.kill('SIGTERM')` and rejects. `FanOutOptions` has a new optional `timeoutMs` field (defaults to 300,000ms).
-**Next:** Nothing.
+Added 5-minute default timeout with `setTimeout` + `child.kill('SIGTERM')`.
 
 ---
 
 ### BUG-06 — `watchAll` redraw race condition
 
 **STATUS: FIXED**
-**File:** `src/core/orchestrator.ts` lines ~290–345
-**Priority: MEDIUM — contributes to dashboard reliability issues**
 
-`redraw` is async and called on an interval. If `redraw` takes longer than `POLL_INTERVAL_MS` (5 seconds), two redraws can run concurrently. The second `clearInterval(poll)` call when a 98% threshold is hit may not prevent an already-queued redraw from firing. This causes garbled terminal output and duplicate `triggerHandoff` calls.
-
-**Fix:** Add a `let isRedrawing = false` guard at the top of the `redraw` function. Skip the redraw if one is already in progress.
-**Progress:** Fixed — added `isRedrawing` and `hasFiredHandoff` flags. Redraw bails early if either is true; `hasFiredHandoff` is set before `triggerHandoff` so no interval tick can re-enter.
-**Next:** Nothing. See TEST-05 for dashboard test coverage (deferred until after BUG-06 fix — now unblocked).
+Added `isRedrawing` and `hasFiredHandoff` guards; redraw bails early if either is true.
 
 ---
 
-### BUG-07 — `fanOut` does not validate `count` parameter
+### BUG-07 — `fanOut` accepts count=0 or count=100
 
 **STATUS: FIXED**
-**File:** `src/core/fanout.ts` line 118
-**Priority: LOW**
 
-No upper or lower bound on `count`. Passing `count: 0` would call `decompose` for 0 subtasks, receive an empty array, and call `synthesize` with empty results. Passing `count: 100` would attempt to spawn 100 concurrent subagent processes.
-
-**Fix:** Clamp `count` to `[1, 10]` at the start of `fanOut`.
-**Progress:** Fixed — `count` is clamped with `Math.min(Math.max(Math.floor(opts.count), 1), 10)`.
-**Next:** Nothing.
+Clamped with `Math.min(Math.max(Math.floor(opts.count), 1), 10)`.
 
 ---
 
-### MISSING-01 — OpenAI backend not implemented
+### BUG-08 — `macc agent list` always shows agents as not installed
+
+**STATUS: FIXED**
+**File:** `src/index.ts` line ~358
+
+In a `"type": "module"` package, `require` is not defined. The `require('node:child_process').execFileSync(...)` call inside the `agentCmd list` action always threw a ReferenceError (silently caught), so every agent showed as "not installed". Fixed by importing `execFileSync` from `node:child_process` at the top of the file and using it directly.
+
+---
+
+### FEATURE-01 — Credit exhaustion and usage-limit auto-switch
 
 **STATUS: COMPLETED**
-**File:** `src/backends/registry.ts` — `gpt-4o` referenced but no `src/backends/openai.ts`
-**Priority: MEDIUM**
+**Files:** `src/utils/errors.ts`, `src/utils/agent-state.ts`, `src/core/orchestrator.ts`
 
-The `openai` npm package is already in `dependencies`. The backend needs to implement `IModelBackend` (stream, isAvailable, token tracking). Context window: gpt-4o = 128k.
+When Claude Code hits its hourly/plan usage limit or any provider runs out of credits, MACC detects the error from stderr and automatically switches to the next configured agent without prompting the user.
 
-**Fix:** Create `src/backends/openai.ts` implementing `IModelBackend`, add entries to `MODEL_MAP` in `registry.ts`, restore `'gpt-4o'` to `DEFAULTS.handoffOrder`.
-**Progress:** Implemented — `src/backends/openai.ts` uses `openai` SDK with streaming + `include_usage: true`. `gpt-4o` (128k) and `gpt-4o-mini` (128k) registered in `MODEL_MAP`. `gpt-4o` restored to `DEFAULTS.handoffOrder`. 13 tests added in `src/backends/openai.test.ts`.
-**Next:** Add `OPENAI_API_KEY` instructions to README/setup wizard (currently only Claude and Google are guided).
+**What was built:**
+- `CreditsExhaustedError` and `UsageLimitError` classes
+- `CREDIT_PATTERNS` — permanent billing failures (insufficient_quota, account suspended, free tier exceeded, OpenAI billing quota)
+- `USAGE_LIMIT_PATTERNS` — temporary rate/usage limits with verified real strings from Anthropic, Gemini, OpenAI APIs
+- `detectExitReason(stderr)` — checks USAGE_LIMIT first (temporary → recoverable), then CREDIT (permanent → switch provider)
+- `parseResetTime(text)` — extracts reset time from "try again at 8 PM", "in 2 hours", ISO timestamps, etc.
+- `recordAgentPaused()` / `getJustRecoveredAgents()` — persists pause state to `~/.macc/pauses.json`; checks on every menu display and notifies user when an agent is back
+- All three backends (Anthropic, Gemini, OpenAI) throw `CreditsExhaustedError` on billing errors
+- Orchestrator wires it all together: stderr tee → `detectExitReason` → auto-switch, pause record, display message
 
 ---
 
-### MISSING-02 — Qodo setup login is hardcoded "coming soon"
+### MISSING-01 — OpenAI backend
+
+**STATUS: COMPLETED**
+
+`src/backends/openai.ts` — `gpt-4o`, `gpt-4o-mini` with streaming + token usage. 13 tests.
+
+---
+
+### MISSING-02 — Qodo setup login hardcoded "coming soon"
 
 **STATUS: OPEN**
-**File:** `src/commands/setup.ts` lines 27–32
-**Priority: LOW**
+**File:** `src/commands/setup.ts`
 
-Qodo adapter and session parsing work fine; users just can't log in through the wizard. The Qodo CLI auth mechanism needs investigation.
-
-**Fix:** Research `qodercli auth` or equivalent command, implement `loginQodo()` similar to `loginClaude()`.
-**Progress:** Nothing done yet.
-**Next:** Check if `qodercli` has an auth subcommand, implement wizard step.
+Qodo adapter and session parsing work; just no login wizard step. Needs investigation of `qodercli auth` command.
 
 ---
 
-### MISSING-03 — `src/repl/session.ts` is dead code
+### MISSING-03 — `src/repl/session.ts` dead code
 
 **STATUS: FIXED**
-**File:** `src/repl/session.ts` (227 lines)
-**Priority: LOW**
 
-This file is a REPL loop left over from early architecture. It is never imported or called. The orchestrator replaced it.
-
-**Fix:** Delete the file. Verify no imports reference it.
-**Progress:** Confirmed no imports, deleted `src/repl/session.ts` and the now-empty `src/repl/` directory.
-**Next:** Nothing.
+Deleted the unused REPL loop file.
 
 ---
 
@@ -165,153 +143,24 @@ This file is a REPL loop left over from early architecture. It is never imported
 
 **STATUS: OPEN**
 **File:** `package.json`
-**Priority: LOW**
 
-`better-sqlite3` is in `dependencies` and its `@types` counterpart is in `devDependencies`. No file in `src/` imports it. Intended for future session history tracking.
-
-**Fix:** Either implement the session history feature or remove the dependency until it's needed.
-**Progress:** Nothing done yet.
-**Next:** Decide whether to implement SQLite session history (see FUTURE-02) or remove the dep.
+Dependency exists but nothing imports it. Either implement SQLite session history or remove it.
 
 ---
 
-### TEST-01 — Display utility functions have no tests
+### MONETIZE-01 — GitHub Sponsors
 
 **STATUS: COMPLETED**
-**File:** `src/utils/display.ts` — `src/utils/display.test.ts` (new)
-**Priority: MEDIUM**
 
-`printUsageBar`, `printAgentRow`, `printStatusHeader`, `printDashboardHeader`, `printSwitchBanner`, `printHandoffSummary`, `printHandoffMenu`, `printWarning`, `startHandoffProgress` all had zero test coverage.
-
-**Progress:** Tests written covering all exported functions including edge cases (0%, 90%, 98%, 100% usage; not-installed agents; long goal truncation; estimated tokens).
-**Next:** Nothing. Done.
+`.github/FUNDING.yml` + badge in README. Activate at github.com/sponsors.
 
 ---
 
-### TEST-02 — Setup wizard has no error-path tests
+### MONETIZE-02 — License system (no longer active)
 
-**STATUS: COMPLETED**
-**File:** `src/commands/setup.ts` — `src/commands/setup.test.ts` (new)
-**Priority: MEDIUM**
+**STATUS: ARCHIVED**
 
-No tests for: already-logged-in fast path, unsupported provider selection, missing CLI tools, failed login, credential write failure.
-
-**Progress:** Tests written covering already-logged-in, Qodo unsupported selection, missing claude CLI, failed login, invalid menu choice retry.
-**Next:** Nothing. Done.
-
----
-
-### TEST-03 — Generic adapter has no edge-case tests
-
-**STATUS: COMPLETED**
-**File:** `src/adapters/generic.ts` — `src/adapters/generic.test.ts` (new)
-**Priority: MEDIUM**
-
-No tests for: malformed JSONL lines, missing `sessionDir`, gemini-compatible format, `sessionFormat: 'none'`, deeply nested session directories.
-
-**Progress:** Tests written covering all session formats, missing dirs, malformed lines, token estimation, `isRunning` false when process not found.
-**Next:** Nothing. Done.
-
----
-
-### TEST-04 — Fanout edge cases under-tested
-
-**STATUS: COMPLETED**
-**File:** `src/core/fanout.test.ts`
-**Priority: MEDIUM**
-
-Only 4 basic tests; no coverage of decomposition failures, synthesis failures, or mixed pass/fail subagent results.
-
-**Progress:** Additional tests added for: decomposition JSON parse failure, synthesis fallback to raw output, mixed success/failure subagents, adapter with no `buildNonInteractiveArgs` (falls back to `--print`).
-**Next:** Nothing. Done.
-
----
-
-### TEST-05 — Dashboard (`watchAll`) has zero tests
-
-**STATUS: COMPLETED**
-**File:** `src/core/orchestrator.ts` — `watchAll` function
-
-`watchAll` requires a full terminal (ANSI escape codes, interval polling, SIGINT handling). Testing it requires careful mocking of `process.stdout.write`, `setInterval`, and `process.once('SIGINT')`.
-
-**Progress:** 4 tests added to `src/core/orchestrator.test.ts`. Key technique: drain microtasks with `for await Promise.resolve()` instead of `runAllTimersAsync()` to avoid triggering the `setInterval` loop with fake timers. Display functions mocked via `vi.mock('../utils/display.js', async importOriginal => ...)`.
-**Next:** Nothing.
-
----
-
-### MONETIZE-01 — Paid tier / hosted SaaS
-
-**STATUS: OPEN**
-**Priority: HIGH for revenue**
-
-MACC currently requires users to have their own API keys and CLI tools installed. A hosted web version could eliminate this friction.
-
-**Model ideas:**
-- **Free tier:** Up to 3 handoffs/day, Claude ↔ Gemini only
-- **Pro tier ($12–19/month):** Unlimited handoffs, all agents, compression history, team sharing
-- **Team tier ($49–99/month):** Shared context store, audit log, custom agents per team
-
-**What's needed:**
-- Web UI (Next.js or similar) wrapping the MACC orchestrator
-- Auth (clerk.dev or auth.js)
-- Usage tracking per user (the SQLite dep already exists)
-- Stripe integration for subscriptions
-
-**Progress:** Nothing done yet — idea only.
-**Next:** Validate demand: post to HN/Reddit, measure GitHub stars. If traction, build web UI first.
-
----
-
-### MONETIZE-02 — npm package / API SDK
-
-**STATUS: OPEN**
-**Priority: MEDIUM**
-
-MACC is already published as `@yunzuriahn/macc` on npm. Could be productized as a proper SDK.
-
-**Model ideas:**
-- **Free CLI:** Current open-source MIT stays free
-- **SDK license ($0/mo for OSS, $X/mo for commercial):** Add a `MaccClient` class that can be embedded in other tools (Cursor extensions, VS Code plugins, CI pipelines)
-- **Marketplace listings:** Cursor marketplace, VS Code extension marketplace
-
-**What's needed:**
-- Clean public API surface (`MaccClient`, `HandoffPacket`, adapters)
-- Documentation site (vitepress or docusaurus)
-- VS Code extension wrapper
-
-**Progress:** Nothing done yet — idea only.
-**Next:** Write a `MaccClient` class that exposes `handoff()`, `compress()`, `fanOut()` as a library. Publish to npm properly.
-
----
-
-### MONETIZE-03 — One-time license for power users
-
-**STATUS: COMPLETED**
-**Priority: MEDIUM**
-
-Many developers distrust SaaS subscriptions for CLI tools. A one-time purchase model fits the audience.
-
-**Model ideas:**
-- **Free:** Core CLI (MIT, current state)
-- **Pro license ($49 one-time):** Fan-out with >2 agents (up to 10), SQLite session history, Discord support
-- **Use Polar.sh** for license key distribution
-
-**Gating mechanism:** HMAC-SHA256 offline validation — no server call required. Format: `MACC-PRO-{8-char-id}-{24-char-hmac}`.
-
-**Progress:** Implemented — `src/utils/license.ts` exports `validateLicense()`, `generateLicenseKey()`, `isPro()`. `MaccConfig` has `licenseKey?: string` field. Fan-out count >2 capped at 2 for free users with upgrade prompt. README updated with pricing table and Polar.sh link. 16 license tests added.
-**Next:** List on Polar.sh at $49, implement key generation endpoint (simple Node.js script using `generateLicenseKey`), add Discord server for Pro supporters.
-
----
-
-### MONETIZE-04 — GitHub Sponsors / Open Collective
-
-**STATUS: COMPLETED**
-**Priority: LOW — low ceiling but zero development cost**
-
-Given the project is MIT and targets developers, GitHub Sponsors is a natural fit for sustaining open-source development without gating features.
-
-**Progress:** Added `.github/FUNDING.yml` pointing to `zuriahn-yun`. Added GitHub Sponsors badge to README header. README now also links sponsors in the Pricing section.
-**Next:** Enable GitHub Sponsors on the account at github.com/sponsors — requires account setup (Stripe connect, profile). Once live, the badge and FUNDING.yml button will auto-activate.
+HMAC-SHA256 offline license system was built (`src/utils/license.ts`) but MACC is now fully free. The license module and `licenseKey` config field remain as dead code — harmless, may be useful if a Pro tier is introduced later.
 
 ---
 
@@ -323,15 +172,24 @@ macc watch     → watchAll() in orchestrator.ts
 macc status    → printStatusOnce() in orchestrator.ts
 macc handoff   → triggerHandoff() in orchestrator.ts
 macc switch    → writes ~/.macc/switch-target, sends SIGUSR1 to PID from ~/.macc/running.pid
-macc agent add → runAgentWizard() in commands/setup.ts → saved to ~/.macc/agents.json
+macc agent add → interactive wizard → saved to ~/.macc/agents.json
 ```
 
-**Handoff flow:**
+**Auto-switch flow (usage limit / credits exhausted):**
+1. Agent exits non-zero → `detectExitReason(stderrBuffer)` returns `'usage-limit'` or `'credits-exhausted'`
+2. `parseResetTime(stderrBuffer)` extracts reset time if present
+3. `recordAgentPaused(agentId, reason, resetAt)` writes to `~/.macc/pauses.json`
+4. `printUsageLimitHit()` or `printCreditsExhausted()` displayed
+5. `targets[0]` auto-selected — no menu shown
+6. `compressWithFallback()` uses a *different* provider for compression (Claude is unavailable → uses Gemini/OpenAI)
+7. New agent launched with `handoffPrompt` as first message
+
+**Normal handoff flow (context window full or manual):**
 1. User exits agent (Ctrl+C) or `macc switch` fires SIGUSR1
-2. Orchestrator reads session JSONL via adapter → `extractSessionContext()`
-3. Compression: `compressWithFallback()` → `HandoffPacket` with structured summary
-4. New agent spawned with `handoffPrompt` as a positional CLI arg
-5. Process repeats
+2. Context % shown; user picks target from menu
+3. `extractSessionContext()` reads JSONL session file
+4. `compressWithFallback()` → `HandoffPacket` with structured summary + 2000-word `handoffPrompt`
+5. New agent spawned with `handoffPrompt`
 
 **Adding a new agent adapter:**
 - Implement `IAgentAdapter` from `src/adapters/base.ts`
