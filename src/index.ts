@@ -17,11 +17,11 @@ const program = new Command();
 
 program
   .name('macc')
-  .description('Run any AI coding agent and rotate to the next one when context fills up')
+  .description('Run any AI coding agent — auto-switches when usage limits or credits are exhausted')
   .version(version);
 
 const commandRows: [string, string][] = [
-  ['macc start',          'Launch an agent; auto-switches when context fills up'],
+  ['macc start',          'Launch an agent; auto-switches when limits or credits are hit'],
   ['macc status',         'Snapshot of context usage across all agents'],
   ['macc watch',          'Live dashboard; monitors agents in real time'],
   ['macc switch [agent]', 'Switch to a different agent mid-session'],
@@ -45,7 +45,7 @@ function printCommandReference(): void {
 // Default: interactive agent launcher with auto-rotation
 program
   .command('start', { isDefault: true })
-  .description('Start an agent and rotate to another when context is full')
+  .description('Start an agent; auto-switches when usage limits, credits, or context window are exhausted')
   .option('-a, --agent <id>', 'agent to start: claude-code, gemini-cli, codex, qodo')
   .action(async (opts) => {
     const cwd = process.cwd();

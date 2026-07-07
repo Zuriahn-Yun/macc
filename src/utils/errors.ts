@@ -190,6 +190,15 @@ export function printCreditsExhaustedNoTarget(fromAgent: string): void {
   console.log(chalk.dim('  Add another provider: ') + chalk.bold('macc agent add') + '\n');
 }
 
+export function printUsageLimitNoTarget(fromAgent: string, resetAt: Date | null): void {
+  console.log('');
+  console.log(chalk.yellow(`  ⏸  Usage limit hit on ${chalk.bold(fromAgent)} — no other agents configured.`));
+  if (resetAt) {
+    console.log(chalk.dim(`  ${chalk.bold(fromAgent)} resets at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`));
+  }
+  console.log(chalk.dim('  Add another provider: ') + chalk.bold('macc agent add') + '\n');
+}
+
 export function printNoTargetAvailable(fromAgent: string): void {
   console.log('');
   console.log(chalk.red(`  ⚠  ${chalk.bold(fromAgent)} is unavailable and no other agents are configured.`));

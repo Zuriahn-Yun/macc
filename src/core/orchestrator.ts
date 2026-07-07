@@ -22,6 +22,7 @@ import {
   detectExitReason,
   parseResetTime,
   printUsageLimitHit,
+  printUsageLimitNoTarget,
   printCreditsExhausted,
   printCreditsExhaustedNoTarget,
   printNoTargetAvailable,
@@ -228,9 +229,11 @@ export async function runWithRotation(
 
       const autoTarget = targets[0] ?? null;
       if (!autoTarget) {
-        exitReason === 'credits-exhausted'
-          ? printCreditsExhaustedNoTarget(agent.id)
-          : printNoTargetAvailable(agent.id);
+        if (exitReason === 'credits-exhausted') {
+          printCreditsExhaustedNoTarget(agent.id);
+        } else {
+          printUsageLimitNoTarget(agent.id, resetAt);
+        }
         return null;
       }
 

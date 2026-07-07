@@ -15,7 +15,7 @@ const DEFAULTS: MaccConfig = {
   defaultModel: 'claude-sonnet-4-6',
   warningThresholdPercent: 90,
   autoPromptThresholdPercent: 98,
-  compressionModel: 'claude-haiku-4-5',
+  compressionModel: 'claude-haiku-4-5-20251001',
   handoffOrder: ['gemini-2.5-pro', 'claude-sonnet-4-6', 'gpt-4o'],
 };
 

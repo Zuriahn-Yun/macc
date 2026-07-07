@@ -5,9 +5,14 @@ import { readClaudeCredentials } from '../auth/credentials.js';
 import { CreditsExhaustedError, isCreditsExhaustedOutput } from '../utils/errors.js';
 
 const CONTEXT_WINDOWS: Record<string, number> = {
-  'claude-opus-4-7':       200_000,
-  'claude-sonnet-4-6':     200_000,
-  'claude-haiku-4-5':      200_000,
+  // Current generation
+  'claude-opus-4-8':            200_000,
+  'claude-sonnet-5':            200_000,
+  'claude-sonnet-4-6':          200_000,
+  'claude-haiku-4-5-20251001':  200_000,
+  // Previous / shorthand aliases still accepted by the API
+  'claude-opus-4-7':            200_000,
+  'claude-haiku-4-5':           200_000,
 };
 
 export class AnthropicBackend implements IModelBackend {
