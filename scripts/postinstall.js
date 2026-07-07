@@ -9,7 +9,7 @@ const r = '\x1b[0m';
 
 console.log('');
 console.log(`  ${g}${b}MACC installed.${r}`);
-console.log(`  ${d}Multi-Agent Coding Client — rotate AI agents before context runs out.${r}`);
+console.log(`  ${d}Multi-Agent Coding Client — auto-switches agents when credits or limits are hit.${r}`);
 console.log('');
 console.log(`  Get started: ${b}macc${r}`);
 console.log(`  ${d}Run it in any project directory to launch an agent.${r}`);
