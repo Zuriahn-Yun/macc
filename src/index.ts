@@ -188,10 +188,6 @@ program
   .action(async () => {
     const cwd = process.cwd();
     const backends = await detectAllAvailableBackends();
-    if (backends.length === 0) {
-      console.error(chalk.red('\n  No AI credentials found for compression.\n'));
-      process.exit(1);
-    }
     const agents = allAdapters(cwd);
     await watchAll(agents, backends);
 
