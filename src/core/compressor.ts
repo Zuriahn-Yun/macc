@@ -122,7 +122,10 @@ export async function compressWithFallback(
       ]
     : backends;
 
-  if (ordered.length === 0) throw new Error('No AI backends available for compression.');
+  // No backends at all — go straight to raw fallback (user has no API keys).
+  if (ordered.length === 0) {
+    return rawHandoffFallback(store, 'unknown', toModel, cwd);
+  }
 
   for (const backend of ordered) {
     try {

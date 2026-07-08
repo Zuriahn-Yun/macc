@@ -72,9 +72,8 @@ program
 
     const backends = await detectAllAvailableBackends();
     if (backends.length === 0) {
-      console.error(chalk.red('  No AI credentials found for compression.'));
-      console.error(chalk.dim('  Log in: claude auth login  OR  set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
-      process.exit(1);
+      console.log(chalk.dim('  No API key found — context handoffs will use raw fallback (no AI compression).'));
+      console.log(chalk.dim('  To enable AI compression: set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
     }
 
     if (opts.agent && !installed.find(a => a.id === opts.agent)) {
@@ -246,7 +245,9 @@ program
     if (!source) { console.error(chalk.red(`\n  Agent "${opts.source}" not found.\n`)); process.exit(1); }
     const targets = adapters.filter(a => a.id !== source.id);
     const backends = await detectAllAvailableBackends();
-    if (backends.length === 0) { console.error(chalk.red('\n  No AI credentials found.\n')); process.exit(1); }
+    if (backends.length === 0) {
+      console.log(chalk.dim('\n  No API key found — handoff will use raw context (no AI compression).\n'));
+    }
     await triggerHandoff(source, targets, backends);
   });
 
