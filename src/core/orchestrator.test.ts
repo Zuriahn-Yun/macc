@@ -290,3 +290,33 @@ describe('buildLaunchArgs per adapter', () => {
     expect(args).not.toContain('--print');
   });
 });
+
+describe('resume session args', () => {
+  it('buildResumeArgs includes --resume flag and session ID', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const args = adapter.buildResumeArgs('abc-123-session');
+    expect(args).toContain('--resume');
+    expect(args).toContain('abc-123-session');
+  });
+
+  it('buildResumeArgs does not include a handoff prompt', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const args = adapter.buildResumeArgs('abc-123-session');
+    // ['--resume', id, '--append-system-prompt', prompt] — exactly 4 items, no user text
+    expect(args).toHaveLength(4);
+    expect(args[0]).toBe('--resume');
+    expect(args[1]).toBe('abc-123-session');
+  });
+
+  it('resume args are used instead of base args when sessionId is present', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const resumeArgs = adapter.buildResumeArgs('my-session');
+    const baseArgs = adapter.buildBaseArgs();
+    // Resume args start with --resume, base args start with --append-system-prompt
+    expect(resumeArgs[0]).toBe('--resume');
+    expect(baseArgs[0]).toBe('--append-system-prompt');
+  });
+});

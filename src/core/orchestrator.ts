@@ -181,6 +181,14 @@ export async function runWithRotation(
   process.off('SIGUSR1', sigusr1Handler);
   clearPid();
 
+  // If we tried to resume a session and it failed, clear it and start fresh.
+  if (resumeSessionId && /no conversation found/i.test(stderrBuffer)) {
+    console.log(chalk.yellow(`\n  Could not resume ${agent.id} session — starting fresh.\n`));
+    sessionMap.delete(agent.id);
+    await runWithRotation(agent, targets, compressBackends, undefined, undefined, sessionMap);
+    return;
+  }
+
   // Detect why the agent exited — normal, usage-limit, or credits-exhausted.
   const exitReason = child.exitCode !== 0 ? detectExitReason(stderrBuffer) : 'normal';
   const autoSwitch = exitReason !== 'normal';
