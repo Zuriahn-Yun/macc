@@ -1,120 +1,140 @@
-# MACC — Multi-Agent Coding Client
+# MACC — Architecture Reference
 
 ## What It Is
 
-MACC is an AI coding assistant CLI — like Claude Code or Gemini CLI, but not locked to one model. You install it once and use it as your daily driver. Under the hood it calls AI APIs directly (Anthropic, Google, OpenAI-compatible), streams responses to your terminal, and tracks token usage from every response.
-
-When you hit 98% of the context window, MACC warns you, compresses the session into a compact handoff, and lets you continue in a fresh context with any supported model — same session, no lost work.
+MACC (Multi-Agent Coding Client) is a **meta-wrapper** around AI coding CLI tools. It doesn't call AI APIs for coding — it spawns Claude Code, Gemini CLI, Codex, and Qodo as child processes and monitors them. When something goes wrong (usage limit, credits exhausted, context full), MACC compresses the session and hands it off to the next agent.
 
 ---
 
-## Install & Launch
+## Core Design
 
-```bash
-# Install globally
-npm install -g macc
+### What MACC is NOT
 
-# Or one-line install script
-curl -fsSL https://get.macc.dev/install.sh | sh
+MACC is not a REPL or a coding assistant itself. It does not stream AI responses to your terminal. The agent CLI (Claude Code, Gemini, etc.) owns the terminal and does all the coding work.
 
-# Launch
-macc
-```
+### What MACC IS
 
-It feels like Claude Code or Gemini CLI — type a message, get a streaming response, keep working.
+MACC is:
+1. A **process monitor** — spawns agent CLIs and watches their stderr for error patterns
+2. A **context extractor** — reads the agent's JSONL session files to get conversation history
+3. A **compression engine** — calls AI APIs (Anthropic, Gemini, OpenAI) to summarize sessions into structured `HandoffPacket`s
+4. A **handoff orchestrator** — launches the next agent with the compressed context as its first message
 
 ---
 
-## The Experience
+## Module Map
 
 ```
-$ macc
-
-  MACC v0.1.0 — Multi-Agent Coding Client
-  Model: claude-sonnet-4-6  |  Context: 0%
-  Type /help for commands, Ctrl+C to exit.
-
-> Fix the auth middleware so it validates JWTs properly
-
-  I'll look at your middleware and fix the JWT validation...
-  [streams response]
-
-  Context: 12%  ████░░░░░░░░░░░░░░░░░░  24,000 / 200,000 tokens
-
-> [continues working normally...]
-
-  ⚠  Context at 98% — 196,000 / 200,000 tokens used.
-
-  Compress and continue with:
-    [1] Gemini 2.5 Pro   (1M ctx — recommended)
-    [2] Claude — new session
-    [3] GPT-4o
-    [4] Stay here (no more room)
-
-> 1
-
-  Compressing session... done (2.1s)
-  Switching to Gemini 2.5 Pro...
-
-  MACC — Gemini 2.5 Pro  |  Context: 0%
-  Continuing from previous session: "Fix auth middleware JWT validation"
-
-> [keeps working — Gemini has full context from the compressed handoff]
+src/
+  index.ts              CLI entry point (commander)
+  core/
+    orchestrator.ts     Main loop: spawn → monitor → detect → compress → switch
+    compressor.ts       AI-assisted session compression + raw fallback
+    context-store.ts    In-memory message store for compression
+    fanout.ts           Parallel task decomposition across multiple agents
+  adapters/
+    base.ts             IAgentAdapter interface
+    claude.ts           Claude Code — reads ~/.claude/projects/**/*.jsonl
+    gemini.ts           Gemini CLI — reads ~/.gemini/tmp/**/chats/session-*.jsonl
+    codex.ts            OpenAI Codex — reads ~/.codex/sessions/**/*.jsonl
+    qodo.ts             Qodo — reads ~/.qoder/projects/**/*.jsonl
+    generic.ts          User-defined agents via ~/.macc/agents.json
+    registry.ts         allAdapters() / discoverAdapters()
+  backends/
+    base.ts             IModelBackend interface
+    anthropic.ts        Anthropic SDK — claude-sonnet-4-6, opus, haiku
+    gemini.ts           Google GenAI SDK — gemini-2.5-pro, 2.0-flash
+    openai.ts           OpenAI SDK — gpt-4o, gpt-4o-mini
+    registry.ts         MODEL_MAP, detectAllAvailableBackends()
+  utils/
+    errors.ts           CREDIT_PATTERNS, USAGE_LIMIT_PATTERNS, detectExitReason(), parseResetTime()
+    agent-state.ts      Pause records persisted to ~/.macc/pauses.json
+    display.ts          Terminal output helpers (chalk-based)
+    config.ts           ~/.macc/config.json loading (cosmiconfig)
+    license.ts          HMAC-SHA256 offline license validation (inactive — MACC is free)
+  auth/
+    credentials.ts      Reads OAuth tokens from CLI stores (Claude, gcloud ADC)
+  models/
+    handoff-packet.ts   HandoffPacket schema (Zod)
+    message.ts          Message type
+    usage.ts            UsageSnapshot type
+  commands/
+    setup.ts            First-run setup wizard
 ```
 
 ---
 
-## How It Works
+## Key Data Flows
 
-MACC owns the API calls — it's not wrapping another CLI. This means:
+### Auto-switch on usage limit / credit exhaustion
 
-1. **Token tracking is exact** — every API response includes `usage.input_tokens` and `usage.output_tokens`. MACC reads these directly.
-2. **Compression is built-in** — at 98%, MACC calls a fast cheap model (Haiku, Gemini Flash) with the full conversation and extracts a structured summary.
-3. **Handoff is seamless** — the next model starts with a compressed context prompt that contains the goal, decisions, current state, files touched, and what to do next.
-4. **Any model** — adding a new AI provider = one new backend module.
+```
+agent process (claude)
+  │
+  ├─ stdout ──────────────────────────────────────── inherited → user's terminal
+  ├─ stdin  ──────────────────────────────────────── inherited → user's keyboard
+  └─ stderr ──── piped to MACC ──┬── forwarded ──── process.stderr → user sees it
+                                 └── buffered ────── stderrBuffer
+
+on exit:
+  detectExitReason(stderrBuffer) → 'usage-limit' | 'credits-exhausted' | 'normal'
+  parseResetTime(stderrBuffer) → Date | null
+  recordAgentPaused(agentId, reason, resetAt)
+  auto-pick targets[0], skip interactive menu
+  compressWithFallback([gemini, openai, ...], ...) → HandoffPacket
+  spawn next agent with handoffPrompt
+```
+
+### Session compression
+
+```
+adapter.extractSessionContext()
+  → reads *.jsonl from agent's session directory
+  → returns { messages[], cwd, inputTokensUsed }
+
+compressWithFallback(backends, store, toModel, cwd, sourceProvider?)
+  → orders backends: non-source-provider first
+  → tries each in sequence:
+      compressContext(backend, store, toModel, cwd)
+        → formats conversation text
+        → calls backend.stream() with COMPRESSION_PROMPT
+        → parses JSON from response → HandoffPacket (Zod validated)
+  → fallback: rawHandoffFallback() (last 30 messages, no AI)
+
+new agent launched:
+  spawn(agent.commandName, [...baseArgs, packet.handoffPrompt])
+```
 
 ---
 
-## Supported Models (MVP)
+## Session File Formats
 
-| Provider | Models | Context Window |
+Each adapter reads a different JSONL format:
+
+| Agent | Path | Format |
 |---|---|---|
-| Anthropic | claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5 | 200k |
-| Google | gemini-2.5-pro, gemini-2.0-flash | 1M+ |
-| OpenAI-compatible | gpt-4o, local models (Ollama) | varies |
+| Claude Code | `~/.claude/projects/<cwd-hash>/<session-id>.jsonl` | `{ type: 'user'|'assistant', message: { content: ContentBlock[], usage } }` |
+| Gemini CLI | `~/.gemini/tmp/<hash>/chats/session-*.jsonl` | `{ type: 'user'|'gemini', content: PartListUnion, tokens: { total } }` |
+| OpenAI Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | `{ type: 'event_msg'|'response_item', payload: {...} }` |
+| Qodo | `~/.qoder/projects/<cwd-hash>/*.jsonl` | Same as Claude Code |
 
 ---
 
-## Commands
+## Error Pattern Coverage
 
-```bash
-# Launch with default model (from config)
-macc
+`src/utils/errors.ts` contains two pattern sets:
 
-# Launch with specific model
-macc --model gemini-2.5-pro
-macc --model claude-opus-4-7
+**CREDIT_PATTERNS** (permanent — switch providers, no recovery):
+- Anthropic: `insufficient_quota`, `exceeded budget`
+- Google: `billing not enabled`, `free tier exceeded`
+- OpenAI: `you exceeded your current quota`, `check your plan and billing`
+- Generic: `payment required`, `account suspended`, `no funds`
 
-# Resume a previous session
-macc --resume
-
-# One-shot (non-interactive)
-macc --print "explain this codebase"
-
-# Manage config
-macc config
-macc config set default-model gemini-2.5-pro
-```
-
-**In-session slash commands:**
-```
-/status      — show token usage breakdown
-/switch      — manually trigger model switch menu
-/compress    — compress context now without switching
-/history     — show past handoffs in this project
-/model       — change model mid-session
-/help        — all commands
-```
+**USAGE_LIMIT_PATTERNS** (temporary — recover after reset time):
+- Anthropic: `rate_limit_error`, `daily rate limit`, `plan's usage`
+- Google: `RESOURCE_EXHAUSTED`, `User Rate Limit Exceeded`, `GenerateRequestsPerDay/PerMinute`
+- OpenAI: `rate_limit_exceeded`, `Rate limit reached for`, `please try again in`
+- Generic: `usage limit`, `limit reached`, `too many requests`, `try again at/in`
 
 ---
 
@@ -128,50 +148,12 @@ macc config set default-model gemini-2.5-pro
   "warningThresholdPercent": 90,
   "autoPromptThresholdPercent": 98,
   "compressionModel": "claude-haiku-4-5",
-  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6", "gpt-4o"],
-  "apiKeys": {
-    "anthropic": "from ANTHROPIC_API_KEY env",
-    "google": "from GOOGLE_API_KEY env",
-    "openai": "from OPENAI_API_KEY env"
-  }
+  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6", "gpt-4o"]
 }
 ```
 
-API keys are read from environment variables — never stored in config.
-
----
-
-## Implementation Phases
-
-### Phase 1 — Working CLI (Week 1–2) ✅
-- ✅ `macc` launches and connects to Claude (Anthropic SDK)
-- ✅ Streaming responses to terminal
-- ✅ Token tracking from API response `usage` field
-- ✅ `/status` command shows usage %
-- ✅ Warning at 98% with model switch menu
-- ✅ Basic compression via any available backend + handoff to next model
-
-### Phase 2 — Multi-Model + Polish (Week 3–4) 🔄
-- ✅ Google Gemini backend (`@google/genai`)
-- ✅ `macc --model` flag, `macc models` command
-- ✅ Auto-detect available backend on startup (tries env vars in order)
-- ✅ Compressor refactored to use any backend (not hardcoded to Haiku); optional native `compress()` hook on backends
-- ⬜ OpenAI-compatible backend
-- ⬜ Session persistence (continue where you left off)
-- ⬜ SQLite handoff history, `/history` command
-
-### Phase 3 — Install + Distribution (Week 5) 🔄
-- ✅ First-run setup wizard — OAuth browser login flows (Claude CLI / gcloud), no raw API keys
-- ✅ Auth module reads credentials from provider CLI stores (`~/.claude/.credentials.json`, gcloud ADC)
-- ✅ Security: credentials never logged, local files written `0o600`, no telemetry
-- ✅ README with install, usage, handoff, security, and config docs
-- ⬜ `npm publish` as `macc`
-- ⬜ One-line install script (`curl | sh`)
-- ⬜ Auto-update check on launch
-- ⬜ Homebrew formula (macOS)
-
----
-
-## Architecture Overview
-
-See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — module breakdown, streaming design, compression engine, and model backend interface.
+State files written by MACC:
+- `~/.macc/running.pid` — PID of the current MACC session (for `macc switch`)
+- `~/.macc/switch-target` — agent ID written by `macc switch <agent>` command
+- `~/.macc/pauses.json` — pause records with reason and reset time
+- `~/.macc/agents.json` — user-defined custom agent configs

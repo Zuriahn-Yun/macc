@@ -175,7 +175,9 @@ export class ClaudeCodeAdapter implements IAgentAdapter {
   }
 
   async getActiveSessionId(): Promise<string | null> {
-    const file = findLatestSessionFile(this.cwd, true);
+    // Must use global=false so the returned ID lives in the current project's
+    // directory — `claude --resume <id>` only searches there, not globally.
+    const file = findLatestSessionFile(this.cwd, false);
     return file ? path.basename(file, '.jsonl') : null;
   }
 

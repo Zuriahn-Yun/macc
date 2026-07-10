@@ -192,11 +192,13 @@ describe('compressWithFallback', () => {
     expect(packet.summary.blockers[0]).toMatch(/rate-limited/i);
   });
 
-  it('throws when no backends provided', async () => {
+  it('falls back to raw handoff when no backends provided', async () => {
     const store = new ContextStore('claude-sonnet-4-6', 200_000, 90, 98, 'system');
     store.addUserMessage('hi');
 
-    await expect(compressWithFallback([], store, 'gemini-2.5-pro', '/project'))
-      .rejects.toThrow('No AI backends available');
+    const packet = await compressWithFallback([], store, 'gemini-2.5-pro', '/project');
+    expect(packet.version).toBe('1');
+    expect(packet.handoffPrompt).toContain('hi');
+    expect(packet.summary.blockers[0]).toMatch(/rate-limited/i);
   });
 });

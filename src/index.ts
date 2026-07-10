@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import readline from 'node:readline';
+import { execFileSync } from 'node:child_process';
 import chalk from 'chalk';
 import { createRequire } from 'node:module';
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -16,11 +17,11 @@ const program = new Command();
 
 program
   .name('macc')
-  .description('Run any AI coding agent and rotate to the next one when context fills up')
+  .description('Run any AI coding agent — auto-switches when usage limits or credits are exhausted')
   .version(version);
 
 const commandRows: [string, string][] = [
-  ['macc start',          'Launch an agent; auto-switches when context fills up'],
+  ['macc start',          'Launch an agent; auto-switches when limits or credits are hit'],
   ['macc status',         'Snapshot of context usage across all agents'],
   ['macc watch',          'Live dashboard; monitors agents in real time'],
   ['macc switch [agent]', 'Switch to a different agent mid-session'],
@@ -44,7 +45,7 @@ function printCommandReference(): void {
 // Default: interactive agent launcher with auto-rotation
 program
   .command('start', { isDefault: true })
-  .description('Start an agent and rotate to another when context is full')
+  .description('Start an agent; auto-switches when usage limits, credits, or context window are exhausted')
   .option('-a, --agent <id>', 'agent to start: claude-code, gemini-cli, codex, qodo')
   .action(async (opts) => {
     const cwd = process.cwd();
@@ -71,9 +72,8 @@ program
 
     const backends = await detectAllAvailableBackends();
     if (backends.length === 0) {
-      console.error(chalk.red('  No AI credentials found for compression.'));
-      console.error(chalk.dim('  Log in: claude auth login  OR  set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
-      process.exit(1);
+      console.log(chalk.dim('  No API key found — context handoffs will use raw fallback (no AI compression).'));
+      console.log(chalk.dim('  To enable AI compression: set ANTHROPIC_API_KEY / GOOGLE_API_KEY\n'));
     }
 
     if (opts.agent && !installed.find(a => a.id === opts.agent)) {
@@ -187,10 +187,6 @@ program
   .action(async () => {
     const cwd = process.cwd();
     const backends = await detectAllAvailableBackends();
-    if (backends.length === 0) {
-      console.error(chalk.red('\n  No AI credentials found for compression.\n'));
-      process.exit(1);
-    }
     const agents = allAdapters(cwd);
     await watchAll(agents, backends);
 
@@ -249,7 +245,9 @@ program
     if (!source) { console.error(chalk.red(`\n  Agent "${opts.source}" not found.\n`)); process.exit(1); }
     const targets = adapters.filter(a => a.id !== source.id);
     const backends = await detectAllAvailableBackends();
-    if (backends.length === 0) { console.error(chalk.red('\n  No AI credentials found.\n')); process.exit(1); }
+    if (backends.length === 0) {
+      console.log(chalk.dim('\n  No API key found — handoff will use raw context (no AI compression).\n'));
+    }
     await triggerHandoff(source, targets, backends);
   });
 
@@ -355,7 +353,7 @@ agentCmd
     }
     console.log(chalk.bold('\n  Custom agents:\n'));
     for (const a of agents) {
-      const installed = (() => { try { require('node:child_process').execFileSync('which', [a.commandName], { stdio: 'ignore' }); return true; } catch { return false; } })();
+      const installed = (() => { try { execFileSync('which', [a.commandName], { stdio: 'ignore' }); return true; } catch { return false; } })();
       const status = installed ? chalk.green('✓') : chalk.dim('✗');
       console.log(`  ${status} ${a.displayName.padEnd(18)} ${chalk.dim(a.commandName.padEnd(14))} ${chalk.dim(a.sessionFormat)}`);
     }

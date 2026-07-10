@@ -193,4 +193,98 @@ describe('fanOut', () => {
     // Only 2 subagents should have been spawned despite 4 subtasks returned
     expect(cp.spawn).toHaveBeenCalledTimes(2);
   });
+
+  it('handles decomposition returning no JSON gracefully', async () => {
+    const { fanOut } = await import('./fanout.js');
+
+    // Backend returns plain text instead of JSON
+    const backend = makeBackendWithResponses(['I cannot decompose this task.']);
+
+    const messages: SessionContext['messages'] = [{ role: 'user', content: 'do something' }];
+    const adapter = makeAdapter(messages);
+
+    // Should not throw — prints error and returns
+    await expect(fanOut(adapter, backend, { count: 2 })).resolves.toBeUndefined();
+
+    const cp = await import('node:child_process');
+    expect(cp.spawn).not.toHaveBeenCalled();
+  });
+
+  it('falls back to raw output when synthesis model returns no JSON', async () => {
+    const { fanOut } = await import('./fanout.js');
+
+    const decompositionResponse = JSON.stringify({
+      subtasks: [
+        { title: 'Task A', prompt: 'Do task A' },
+      ],
+    });
+    // Synthesis returns garbled text instead of JSON
+    const backend = makeBackendWithResponses([decompositionResponse, 'Something went wrong']);
+
+    const cp = await import('node:child_process');
+    vi.mocked(cp.spawn).mockReturnValue(makeChild(0, 'task A output') as unknown as ReturnType<typeof cp.spawn>);
+
+    const messages: SessionContext['messages'] = [{ role: 'user', content: 'do task A' }];
+    const adapter = makeAdapter(messages);
+
+    // Should not throw — logs raw outputs instead
+    await expect(fanOut(adapter, backend, { count: 1 })).resolves.toBeUndefined();
+  });
+
+  it('handles mixed pass/fail subagents — still synthesizes with available results', async () => {
+    const { fanOut } = await import('./fanout.js');
+
+    const decompositionResponse = JSON.stringify({
+      subtasks: [
+        { title: 'Pass', prompt: 'do pass' },
+        { title: 'Fail', prompt: 'do fail' },
+      ],
+    });
+    const synthesisResponse = JSON.stringify({
+      summary: 'Partial completion.',
+      nextStep: 'Fix the failing task.',
+      combinedOutput: 'Pass output combined.',
+    });
+    const backend = makeBackendWithResponses([decompositionResponse, synthesisResponse]);
+
+    const cp = await import('node:child_process');
+    let callCount = 0;
+    vi.mocked(cp.spawn).mockImplementation(() => {
+      // First subagent succeeds, second fails
+      return makeChild(callCount++ === 0 ? 0 : 1, callCount === 1 ? 'pass output' : '') as unknown as ReturnType<typeof cp.spawn>;
+    });
+
+    const messages: SessionContext['messages'] = [{ role: 'user', content: 'do both tasks' }];
+    const adapter = makeAdapter(messages);
+
+    await expect(fanOut(adapter, backend, { count: 2 })).resolves.toBeUndefined();
+    // Synthesis is still called even when one subagent failed
+    expect(backend.stream).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses adapter buildNonInteractiveArgs when available', async () => {
+    const { fanOut } = await import('./fanout.js');
+
+    const decompositionResponse = JSON.stringify({
+      subtasks: [{ title: 'Task', prompt: 'the-prompt' }],
+    });
+    const synthesisResponse = JSON.stringify({
+      summary: 'Done.',
+      nextStep: 'Deploy.',
+      combinedOutput: 'Output.',
+    });
+    const backend = makeBackendWithResponses([decompositionResponse, synthesisResponse]);
+
+    const cp = await import('node:child_process');
+    vi.mocked(cp.spawn).mockReturnValue(makeChild(0) as unknown as ReturnType<typeof cp.spawn>);
+
+    const messages: SessionContext['messages'] = [{ role: 'user', content: 'work' }];
+    // Custom buildNonInteractiveArgs that uses -p flag instead of --print
+    const adapter = makeAdapter(messages);
+    adapter.buildNonInteractiveArgs = (prompt: string) => ['-p', prompt];
+
+    await fanOut(adapter, backend, { count: 1 });
+
+    expect(cp.spawn).toHaveBeenCalledWith('claude', ['-p', 'the-prompt'], expect.any(Object));
+  });
 });

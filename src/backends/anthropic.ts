@@ -2,11 +2,17 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { IModelBackend, StreamChunk } from './base.js';
 import type { Message, TokenUsage } from '../models/message.js';
 import { readClaudeCredentials } from '../auth/credentials.js';
+import { CreditsExhaustedError, isCreditsExhaustedOutput } from '../utils/errors.js';
 
 const CONTEXT_WINDOWS: Record<string, number> = {
-  'claude-opus-4-7':       200_000,
-  'claude-sonnet-4-6':     200_000,
-  'claude-haiku-4-5':      200_000,
+  // Current generation
+  'claude-opus-4-8':            200_000,
+  'claude-sonnet-5':            200_000,
+  'claude-sonnet-4-6':          200_000,
+  'claude-haiku-4-5-20251001':  200_000,
+  // Previous / shorthand aliases still accepted by the API
+  'claude-opus-4-7':            200_000,
+  'claude-haiku-4-5':           200_000,
 };
 
 export class AnthropicBackend implements IModelBackend {
@@ -46,23 +52,32 @@ export class AnthropicBackend implements IModelBackend {
     let inputTokens = 0;
     let outputTokens = 0;
 
-    const stream = await client.messages.stream({
-      model: this.modelId,
-      max_tokens: 8096,
-      system: systemPrompt,
-      messages: apiMessages,
-    });
+    try {
+      const stream = await client.messages.stream({
+        model: this.modelId,
+        max_tokens: 8096,
+        system: systemPrompt,
+        messages: apiMessages,
+      });
 
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        onChunk({ text: event.delta.text, done: false });
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          onChunk({ text: event.delta.text, done: false });
+        }
+        if (event.type === 'message_delta' && event.usage) {
+          outputTokens = event.usage.output_tokens;
+        }
+        if (event.type === 'message_start' && event.message.usage) {
+          inputTokens = event.message.usage.input_tokens;
+        }
       }
-      if (event.type === 'message_delta' && event.usage) {
-        outputTokens = event.usage.output_tokens;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (status === 402 || isCreditsExhaustedOutput(msg)) {
+        throw new CreditsExhaustedError('anthropic', msg);
       }
-      if (event.type === 'message_start' && event.message.usage) {
-        inputTokens = event.message.usage.input_tokens;
-      }
+      throw err;
     }
 
     onChunk({ text: '', done: true, usage: { inputTokens, outputTokens } });

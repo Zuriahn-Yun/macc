@@ -1,6 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IAgentAdapter, SessionContext, UsageSnapshot } from '../adapters/base.js';
 import type { IModelBackend, StreamChunk } from '../backends/base.js';
+
+// Mock display functions so watchAll tests don't write to the real terminal.
+vi.mock('../utils/display.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../utils/display.js')>();
+  return {
+    ...real,
+    printDashboardHeader: vi.fn(),
+    printAgentRow: vi.fn(),
+    printStatusHeader: vi.fn(),
+    printWarning: vi.fn(),
+    printHandoffMenu: vi.fn(),
+    printHandoffSummary: vi.fn(),
+    printSwitchBanner: vi.fn(),
+    startHandoffProgress: vi.fn().mockReturnValue(() => {}),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -125,6 +141,119 @@ describe('compression before handoff', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// watchAll dashboard
+// ---------------------------------------------------------------------------
+
+// Drain the microtask queue without advancing fake timers (so setInterval
+// doesn't fire repeatedly). All async mock functions resolve immediately, so
+// a handful of awaits is enough to let a single redraw complete.
+async function flushMicrotasks(n = 20): Promise<void> {
+  for (let i = 0; i < n; i++) await Promise.resolve();
+}
+
+describe('watchAll', () => {
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    stdoutSpy.mockRestore();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('calls getUsageSnapshot for each installed agent on first redraw', async () => {
+    const { watchAll } = await import('./orchestrator.js');
+    const { printAgentRow } = await import('../utils/display.js');
+
+    const installed = makeAdapter('claude-code', 50);
+    const notInstalled = makeAdapter('gemini-cli', 0);
+
+    const watchPromise = watchAll(
+      [{ adapter: installed, installed: true }, { adapter: notInstalled, installed: false }],
+      [makeBackend()],
+    );
+
+    // Let the initial await redraw() complete via microtask drain (not timers).
+    await flushMicrotasks();
+    process.emit('SIGINT');
+    await watchPromise;
+
+    expect(installed.getUsageSnapshot).toHaveBeenCalled();
+    expect(notInstalled.getUsageSnapshot).not.toHaveBeenCalled();
+    expect(printAgentRow).toHaveBeenCalled();
+  });
+
+  it('resolves when SIGINT is emitted', async () => {
+    const { watchAll } = await import('./orchestrator.js');
+    const adapter = makeAdapter('claude-code', 50);
+
+    const watchPromise = watchAll([{ adapter, installed: true }], [makeBackend()]);
+
+    await flushMicrotasks();
+    process.emit('SIGINT');
+
+    await expect(watchPromise).resolves.toBeUndefined();
+  });
+
+  it('does not fire a second redraw while one is in progress', async () => {
+    const { watchAll } = await import('./orchestrator.js');
+
+    let resolveSlowSnapshot: (() => void) | undefined;
+    const slowSnap: IAgentAdapter = {
+      ...makeAdapter('claude-code', 50),
+      getUsageSnapshot: vi.fn().mockImplementation(
+        () => new Promise<UsageSnapshot>(resolve => {
+          resolveSlowSnapshot = () => resolve({
+            agentId: 'claude-code',
+            isRunning: true,
+            contextUsedPercent: 50,
+            inputTokensUsed: 100_000,
+            contextWindowTokens: 200_000,
+          });
+        })
+      ),
+    };
+
+    const watchPromise = watchAll([{ adapter: slowSnap, installed: true }], [makeBackend()]);
+
+    // Initial redraw has started (snapshot pending). Advance timer to fire
+    // the setInterval — but isRedrawing guard should block the second call.
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // Still only one outstanding snapshot call.
+    expect(slowSnap.getUsageSnapshot).toHaveBeenCalledTimes(1);
+
+    // Let the slow snapshot resolve, then SIGINT.
+    resolveSlowSnapshot?.();
+    await flushMicrotasks();
+    process.emit('SIGINT');
+    await watchPromise;
+  });
+
+  it('prints not-installed row without calling getUsageSnapshot', async () => {
+    const { watchAll } = await import('./orchestrator.js');
+    const { printAgentRow } = await import('../utils/display.js');
+
+    const adapter = makeAdapter('codex', 0);
+    const watchPromise = watchAll([{ adapter, installed: false }], [makeBackend()]);
+
+    await flushMicrotasks();
+    process.emit('SIGINT');
+    await watchPromise;
+
+    expect(adapter.getUsageSnapshot).not.toHaveBeenCalled();
+    expect(printAgentRow).toHaveBeenCalledWith(
+      'codex', false, false, 0, 0, expect.any(Number)
+    );
+  });
+});
+
 describe('buildLaunchArgs per adapter', () => {
   it('claude-code launches with prompt as positional arg (interactive)', async () => {
     const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
@@ -159,5 +288,35 @@ describe('buildLaunchArgs per adapter', () => {
     const { args } = adapter.buildLaunchArgs(packet);
     expect(args[0]).toContain('auth middleware');
     expect(args).not.toContain('--print');
+  });
+});
+
+describe('resume session args', () => {
+  it('buildResumeArgs includes --resume flag and session ID', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const args = adapter.buildResumeArgs('abc-123-session');
+    expect(args).toContain('--resume');
+    expect(args).toContain('abc-123-session');
+  });
+
+  it('buildResumeArgs does not include a handoff prompt', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const args = adapter.buildResumeArgs('abc-123-session');
+    // ['--resume', id, '--append-system-prompt', prompt] — exactly 4 items, no user text
+    expect(args).toHaveLength(4);
+    expect(args[0]).toBe('--resume');
+    expect(args[1]).toBe('abc-123-session');
+  });
+
+  it('resume args are used instead of base args when sessionId is present', async () => {
+    const { ClaudeCodeAdapter } = await import('../adapters/claude.js');
+    const adapter = new ClaudeCodeAdapter('/project');
+    const resumeArgs = adapter.buildResumeArgs('my-session');
+    const baseArgs = adapter.buildBaseArgs();
+    // Resume args start with --resume, base args start with --append-system-prompt
+    expect(resumeArgs[0]).toBe('--resume');
+    expect(baseArgs[0]).toBe('--append-system-prompt');
   });
 });

@@ -38,54 +38,58 @@ function ask(rl: readline.Interface, question: string): Promise<string> {
 }
 
 export async function runSetupWizard(): Promise<IModelBackend> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  // Loop instead of recursion — prevents stack overflow when user repeatedly
+  // selects unsupported providers (e.g. Qodo).
+  while (true) {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  console.log('');
-  console.log(chalk.bold('  MACC — First-time setup'));
-  console.log(chalk.dim('  No credentials found. Log in to a provider to get started.'));
-  console.log('');
+    console.log('');
+    console.log(chalk.bold('  MACC — First-time setup'));
+    console.log(chalk.dim('  No credentials found. Log in to a provider to get started.'));
+    console.log('');
 
-  PROVIDERS.forEach((p, i) => {
-    const already = p.checkAvailable();
-    const status = already ? chalk.green('✓ logged in') : '';
-    console.log(`    [${i + 1}] ${p.label}  ${status}`);
-  });
-  console.log('');
+    PROVIDERS.forEach((p, i) => {
+      const already = p.checkAvailable();
+      const status = already ? chalk.green('✓ logged in') : '';
+      console.log(`    [${i + 1}] ${p.label}  ${status}`);
+    });
+    console.log('');
 
-  let provider: Provider | undefined;
-  while (!provider) {
-    const answer = (await ask(rl, chalk.bold.green('  > '))).trim();
-    const idx = parseInt(answer, 10) - 1;
-    if (idx >= 0 && idx < PROVIDERS.length) {
-      provider = PROVIDERS[idx];
-    } else {
-      console.log(chalk.dim(`  Please enter a number between 1 and ${PROVIDERS.length}.`));
+    let provider: Provider | undefined;
+    while (!provider) {
+      const answer = (await ask(rl, chalk.bold.green('  > '))).trim();
+      const idx = parseInt(answer, 10) - 1;
+      if (idx >= 0 && idx < PROVIDERS.length) {
+        provider = PROVIDERS[idx];
+      } else {
+        console.log(chalk.dim(`  Please enter a number between 1 and ${PROVIDERS.length}.`));
+      }
     }
-  }
 
-  rl.close();
+    rl.close();
 
-  if (provider.defaultModel === '') {
-    // Unsupported provider selected
-    provider.login();
-    console.log(chalk.yellow('\n  Please choose a supported provider to continue.\n'));
-    return runSetupWizard();
-  }
+    if (provider.defaultModel === '') {
+      // Unsupported provider — show the message and re-show the menu.
+      provider.login();
+      console.log(chalk.yellow('\n  Please choose a supported provider to continue.\n'));
+      continue;
+    }
 
-  // If already logged in, skip the login step
-  if (provider.checkAvailable()) {
-    console.log(chalk.green(`\n  Already logged in. Starting with ${provider.defaultModel}...\n`));
+    // If already logged in, skip the login step.
+    if (provider.checkAvailable()) {
+      console.log(chalk.green(`\n  Already logged in. Starting with ${provider.defaultModel}...\n`));
+      return getBackend(provider.defaultModel);
+    }
+
+    console.log('');
+    const ok = provider.login();
+    if (!ok) {
+      console.log(chalk.yellow('\n  Login was not completed. Please try again.\n'));
+      process.exit(1);
+    }
+
     return getBackend(provider.defaultModel);
   }
-
-  console.log('');
-  const ok = provider.login();
-  if (!ok) {
-    console.log(chalk.yellow('\n  Login was not completed. Please try again.\n'));
-    process.exit(1);
-  }
-
-  return getBackend(provider.defaultModel);
 }
 
 // --- login helpers ---

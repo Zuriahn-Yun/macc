@@ -688,11 +688,13 @@ describe('Compression pipeline', () => {
     expect(anthropic.stream).not.toHaveBeenCalled();
   });
 
-  it('throws when no backends provided', async () => {
+  it('falls back to raw handoff when no backends provided', async () => {
     const { compressWithFallback } = await import('./core/compressor.js');
     const store = await makeStore([{ role: 'user', content: 'hi' }]);
-    await expect(compressWithFallback([], store, 'gemini-cli', '/project'))
-      .rejects.toThrow('No AI backends available');
+    const packet = await compressWithFallback([], store, 'gemini-cli', '/project');
+    expect(packet.version).toBe('1');
+    expect(packet.handoffPrompt).toContain('hi');
+    expect(packet.summary.blockers[0]).toMatch(/rate-limited/i);
   });
 });
 

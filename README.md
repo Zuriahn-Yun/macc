@@ -1,14 +1,79 @@
 # MACC — Multi-Agent Coding Client
 
-MACC is an AI coding assistant CLI that isn't locked to one model. It calls AI APIs directly, streams responses to your terminal, and tracks token usage in real time. When you're near the context limit, it compresses the session and seamlessly hands it off to a fresh model — same work, no lost progress.
+[![npm](https://img.shields.io/npm/v/@yunzuriahn/macc)](https://www.npmjs.com/package/@yunzuriahn/macc)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/zuriahn-yun?style=flat&label=Sponsor&logo=github)](https://github.com/sponsors/zuriahn-yun)
 
-## Why MACC?
+**Stop losing your session when Claude hits its usage limit.**
 
-Most AI coding assistants (Claude Code, Gemini CLI, Copilot) are locked to one provider. MACC lets you:
+You're deep in a task. Claude Code hits its hourly rate limit or exhausts your plan's credits. Normally that means: stop, wait, lose context, start over. MACC detects the error, compresses your full session — goal, decisions, files touched, what's next — and hands it off to Gemini (or any other agent you have configured). You keep coding. The new agent already knows everything.
 
-- **Start with Claude**, automatically compress and **continue with Gemini** when you hit the limit — no re-explaining context
-- **Use any supported model** from the same interface with a consistent UX
-- **Own your session** — MACC talks directly to APIs, so token counts are exact and nothing is hidden
+Works with **Claude Code, Gemini CLI, OpenAI Codex, and Qodo**. Runs from your terminal in 30 seconds.
+
+```bash
+npm install -g @yunzuriahn/macc && macc
+```
+
+---
+
+## What MACC does
+
+### Auto-switch on usage limits and credit exhaustion
+
+When Claude Code hits its limit mid-session, you normally see an error and stop cold. MACC intercepts it:
+
+```
+  ⏸  Usage limit hit on claude-code.
+     claude-code resets at 8:00 PM.
+     Automatically continuing on gemini-cli...
+
+  Compressing session... done (2.1s)
+
+  ┌─ Handoff summary ─────────────────────────────────┐
+  │ Goal:   Fix auth middleware and write tests        │
+  │ Done:   Reviewed auth.ts, found JWT bug on line 42 │
+  │ Next:   Write failing test, fix validate()         │
+  │ Files:  src/auth.ts, src/middleware.ts             │
+  └───────────────────────────────────────────────────┘
+
+  Starting gemini-cli... Session context loaded.
+```
+
+No prompts. No menu. It just switches and picks up where you left off.
+
+When Claude's limit resets, MACC tells you:
+
+```
+  ✓  claude-code is available again.
+```
+
+### Also handles context window handoffs
+
+When your context fills up, MACC presents a menu so you can continue in a fresh agent:
+
+```
+  ⚠  Context at 98% — 196,000 / 200,000 tokens used.
+
+  Compress and continue with:
+  [1] gemini-cli — (1M ctx, 0% used)
+  [2] claude-code — new session
+
+> 1
+```
+
+### Context is always preserved
+
+Whether switching due to a usage limit or a full context window, MACC compresses the entire session using AI-assisted summarization:
+
+- **What were you building** — the ultimate goal
+- **What was completed** — all work done so far
+- **What's next** — the single most important next step
+- **Key decisions** — why things were done the way they were
+- **Files modified** — exact paths that changed
+- **Git state** — current diff and recent commits
+
+The new agent starts with a full briefing and continues immediately.
+
+---
 
 ## Install
 
@@ -20,86 +85,78 @@ Requires Node.js 20+.
 
 ## Getting Started
 
-Run `macc` and follow the first-time setup wizard:
+MACC uses your existing CLI logins — no API keys to copy, paste, or rotate.
 
-```
-$ macc
-
-  MACC — First-time setup
-  No credentials found. Log in to a provider to get started.
-
-    [1] Claude (via Claude CLI)
-    [2] Google Gemini (via gcloud)
-    [3] Qodo (coming soon)
-
-  > 1
-
-  Opening browser for Claude login...
-  [browser opens]
-
-  Claude login successful.
-```
-
-MACC uses **your existing CLI logins** — no API keys to copy, paste, or rotate.
-
-| Provider | Login method |
+| Provider | How to log in |
 |---|---|
-| Anthropic / Claude | `claude auth login` (Claude CLI) |
+| Anthropic / Claude | `claude auth login` (Claude Code CLI) |
 | Google / Gemini | `gcloud auth application-default login` |
-| Qodo | Coming soon |
+| OpenAI | Set `OPENAI_API_KEY` environment variable |
+| Qodo | Install `qodercli` (no extra auth needed) |
 
-## Usage
+Then run:
 
 ```bash
-# Pick an installed agent to launch
+macc
+```
+
+MACC shows all installed agents and lets you pick one to start. From there, it monitors your session and acts automatically if a limit is hit.
+
+---
+
+## Commands
+
+```bash
+# Pick an installed agent to start
 macc
 
-# Launch a specific agent
-macc start -a codex
+# Start a specific agent
+macc start -a gemini-cli
 
-# Show all agents and current context usage
+# Show context usage across all agents
 macc status
 
 # Open the live dashboard
 macc watch
+
+# Compress the current session and hand off to another agent
+macc handoff
+
+# Switch mid-session without exiting
+macc switch
+macc switch gemini-cli   # jump directly to a specific agent
+
+# Add a custom agent (Aider, Cursor, etc.)
+macc agent add
+macc agent list
+macc agent remove <id>
 ```
 
-### In-session commands
+---
 
-```
-/status    — show token usage breakdown
-/model     — show current model
-/switch    — manually trigger handoff menu
-/help      — all commands
-Ctrl+C     — exit
-```
+## Supported Agents
 
-## Context Handoff
+| Agent | CLI binary | Install |
+|---|---|---|
+| Claude Code | `claude` | `npm install -g @anthropic-ai/claude-code` |
+| Gemini CLI | `gemini` | `npm install -g @google/gemini-cli` |
+| OpenAI Codex | `codex` | `npm install -g @openai/codex` |
+| Qodo | `qodercli` | `npm install -g @qoder-ai/qodercli` |
+| Custom | any CLI | `macc agent add` |
 
-When your context reaches 90%, MACC warns you. At 98% it presents a handoff menu:
+---
 
-```
-  ⚠  Context at 98% — 196,000 / 200,000 tokens used.
+## Supported Models (for compression)
 
-  Compress and continue with:
-    [1] Gemini 2.5 Pro   (1M ctx — recommended)
-    [2] Claude — new session
-
-> 1
-
-  Compressing session... done (2.1s)
-  Switching to gemini-2.5-pro...
-  Continuing from: "Fix auth middleware JWT validation"
-```
-
-The compression extracts the goal, key decisions, files touched, and pending tasks into a structured handoff so the next model starts with full context.
-
-## Supported Models
+MACC uses these models to compress sessions when handing off. You need credentials for at least one.
 
 | Provider | Models | Context |
 |---|---|---|
 | Anthropic | claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5 | 200k |
 | Google | gemini-2.5-pro, gemini-2.0-flash | 1M |
+| OpenAI | gpt-4o, gpt-4o-mini | 128k |
+
+---
 
 ## Configuration
 
@@ -110,16 +167,19 @@ The compression extracts the goal, key decisions, files touched, and pending tas
   "defaultModel": "claude-sonnet-4-6",
   "warningThresholdPercent": 90,
   "autoPromptThresholdPercent": 98,
-  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6"]
+  "handoffOrder": ["gemini-2.5-pro", "claude-sonnet-4-6", "gpt-4o"]
 }
 ```
+
+---
 
 ## Security
 
 - **No API keys stored** — MACC reads OAuth tokens from your existing CLI credential stores (`~/.claude/.credentials.json`, gcloud ADC). You never paste keys into MACC.
 - **Credentials never logged** — tokens are read in-memory and never written to disk by MACC.
-- **Least-privilege credential files** — if MACC creates any local files (e.g. `~/.macc/.env` for optional manual overrides), they are written with mode `0o600` (owner read/write only).
 - **No telemetry** — MACC makes no outbound calls except to the AI provider APIs you explicitly log into.
+
+---
 
 ## Architecture
 
@@ -127,4 +187,6 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ## License
 
-MIT
+MIT — free forever.
+
+**Support open-source development:** [GitHub Sponsors](https://github.com/sponsors/zuriahn-yun)

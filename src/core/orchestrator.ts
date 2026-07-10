@@ -18,6 +18,22 @@ import {
   printStatusHeader,
   printAgentRow,
 } from '../utils/display.js';
+import {
+  detectExitReason,
+  parseResetTime,
+  printUsageLimitHit,
+  printUsageLimitNoTarget,
+  printCreditsExhausted,
+  printCreditsExhaustedNoTarget,
+  printNoTargetAvailable,
+} from '../utils/errors.js';
+import {
+  recordAgentPaused,
+  clearAgentPause,
+  getJustRecoveredAgents,
+  getAgentPause,
+  formatResetTime,
+} from '../utils/agent-state.js';
 
 const POLL_INTERVAL_MS = 5_000;
 const MACC_DIR = path.join(os.homedir(), '.macc');
@@ -129,13 +145,23 @@ export async function runWithRotation(
   // Print the status table once before handing off the terminal.
   await printStatusTable(agent, targets);
 
-  // Spawn the agent with the full terminal handed to it.
-  const child = spawn(agent.commandName, launchArgs, { stdio: 'inherit' });
+  // Spawn the agent. Inherit stdin + stdout so the terminal is fully theirs.
+  // Pipe stderr so MACC can detect credit-exhaustion errors; forward every
+  // byte to process.stderr so the user still sees all error output.
+  let stderrBuffer = '';
+  const child = spawn(agent.commandName, launchArgs, { stdio: ['inherit', 'inherit', 'pipe'] });
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderrBuffer += chunk.toString();
+    process.stderr.write(chunk);
+  });
 
   // SIGUSR1 = manual switch request from "macc switch" command.
   // Kill the child so we regain the terminal and can show the menu.
   let forceSwitch = false;
-  writePid();
+  // Write PID only after confirming the child started — prevents orphaned PID
+  // files when spawn() fails (e.g. binary not found).
+  if (child.pid !== undefined) writePid();
+  child.on('error', () => clearPid());
   const sigusr1Handler = () => {
     forceSwitch = true;
     child.kill('SIGTERM');
@@ -155,6 +181,18 @@ export async function runWithRotation(
   process.off('SIGUSR1', sigusr1Handler);
   clearPid();
 
+  // If we tried to resume a session and it failed, clear it and start fresh.
+  if (resumeSessionId && /no conversation found/i.test(stderrBuffer)) {
+    console.log(chalk.yellow(`\n  Could not resume ${agent.id} session — starting fresh.\n`));
+    sessionMap.delete(agent.id);
+    await runWithRotation(agent, targets, compressBackends, undefined, undefined, sessionMap);
+    return;
+  }
+
+  // Detect why the agent exited — normal, usage-limit, or credits-exhausted.
+  const exitReason = child.exitCode !== 0 ? detectExitReason(stderrBuffer) : 'normal';
+  const autoSwitch = exitReason !== 'normal';
+
   // Re-read context after exit for accuracy.
   const snap = await agent.getUsageSnapshot().catch(() => lastSnapshot);
   const pct = snap?.contextUsedPercent ?? 0;
@@ -165,7 +203,9 @@ export async function runWithRotation(
 
   console.log(''); // newline after agent's terminal output
 
-  if (pct >= 85) {
+  if (autoSwitch) {
+    // Skip context % message — the error is already visible from stderr.
+  } else if (pct >= 85) {
     printWarning(pct, snap?.inputTokensUsed ?? 0, snap?.contextWindowTokens ?? agent.getContextWindowSize());
   } else {
     console.log(chalk.dim(`  Session ended. Context was at ${pct.toFixed(0)}%.`));
@@ -174,11 +214,45 @@ export async function runWithRotation(
   // Include the current agent in the menu so the user can return to it.
   const allTargets = [...targets, agent];
 
-  // Refresh the dashboard before showing the menu.
-  await printStatusTable(agent, targets);
+  // Refresh the dashboard before showing the menu (skip on auto-switch).
+  if (!autoSwitch) await printStatusTable(agent, targets);
 
-  // Pick the next agent — either from a "macc switch <id>" file or via interactive menu.
+  // Check if any previously rate-limited agents are now available again.
+  const allAgentIds = [...targets, agent].map(a => a.id);
+  const justRecovered = getJustRecoveredAgents(allAgentIds);
+  for (const { agentId } of justRecovered) {
+    console.log(chalk.green(`  ✓  ${chalk.bold(agentId)} is available again.`));
+    clearAgentPause(agentId);
+  }
+
+  // Pick the next agent — auto on usage-limit/credit errors, interactive otherwise.
   const target = await (async (): Promise<IAgentAdapter | null> => {
+    if (autoSwitch) {
+      const resetAt = exitReason === 'usage-limit' ? parseResetTime(stderrBuffer) : null;
+
+      // Record that this agent is paused so we can notify when it recovers.
+      if (exitReason === 'usage-limit') {
+        recordAgentPaused(agent.id, 'usage-limit', resetAt);
+      }
+
+      const autoTarget = targets[0] ?? null;
+      if (!autoTarget) {
+        if (exitReason === 'credits-exhausted') {
+          printCreditsExhaustedNoTarget(agent.id);
+        } else {
+          printUsageLimitNoTarget(agent.id, resetAt);
+        }
+        return null;
+      }
+
+      if (exitReason === 'credits-exhausted') {
+        printCreditsExhausted(agent.id, autoTarget.id);
+      } else {
+        printUsageLimitHit(agent.id, autoTarget.id, resetAt);
+      }
+      return autoTarget;
+    }
+
     if (fs.existsSync(SWITCH_TARGET_FILE)) {
       const requestedId = fs.readFileSync(SWITCH_TARGET_FILE, 'utf8').trim();
       fs.unlinkSync(SWITCH_TARGET_FILE);
@@ -199,6 +273,13 @@ export async function runWithRotation(
 
     const menuLabels = allTargets.map(t => {
       const canResume = sessionMap.has(t.id) && t.buildResumeArgs;
+      const pause = getAgentPause(t.id);
+      const wasJustRecovered = justRecovered.some(r => r.agentId === t.id);
+      if (wasJustRecovered) return `${t.id} ✓ back`;
+      if (pause?.resetAt) {
+        const resetDate = new Date(pause.resetAt);
+        if (resetDate > new Date()) return `${t.id} (paused — ${formatResetTime(resetDate)})`;
+      }
       return canResume ? `${t.id} (resume)` : t.id;
     });
     printHandoffMenu(menuLabels, forceSwitch);
@@ -227,11 +308,14 @@ export async function runWithRotation(
     return;
   }
 
-  // Give the user a chance to append notes before compression runs.
-  const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-  console.log(chalk.dim('  Anything to add to the handoff context? (Enter to skip)'));
-  const extraContext = await new Promise<string>(r => rl2.question(chalk.dim('  > '), r));
-  rl2.close();
+  // On auto-switch (usage limit or credits), skip the notes prompt — speed matters.
+  let extraContext = '';
+  if (!autoSwitch) {
+    const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+    console.log(chalk.dim('  Anything to add to the handoff context? (Enter to skip)'));
+    extraContext = await new Promise<string>(r => rl2.question(chalk.dim('  > '), r));
+    rl2.close();
+  }
 
   const start = Date.now();
   const progress = startHandoffProgress();
@@ -320,7 +404,14 @@ export async function watchAll(
   let signalDone: (() => void) | undefined;
   const donePromise = new Promise<void>(resolve => { signalDone = resolve; });
 
+  let isRedrawing = false;
+  let hasFiredHandoff = false;
+
   const redraw = async () => {
+    // Skip if a redraw or handoff is already in progress — prevents concurrent
+    // redraws from corrupting the terminal and triggering duplicate handoffs.
+    if (isRedrawing || hasFiredHandoff) return;
+    isRedrawing = true;
     process.stdout.write('\x1b[H\x1b[J');
     printDashboardHeader();
 
@@ -334,7 +425,9 @@ export async function watchAll(
         printAgentRow(adapter.id, true, snap.isRunning, snap.contextUsedPercent, snap.inputTokensUsed, snap.contextWindowTokens, snap.isEstimated);
 
         if (snap.isRunning && snap.contextUsedPercent >= 98) {
+          hasFiredHandoff = true;
           clearInterval(poll);
+          isRedrawing = false;
           console.log('');
           printWarning(snap.contextUsedPercent, snap.inputTokensUsed, snap.contextWindowTokens);
           const otherTargets = installed.filter(a => a.id !== adapter.id);
@@ -350,6 +443,7 @@ export async function watchAll(
         printAgentRow(adapter.id, true, false, 0, 0, adapter.getContextWindowSize());
       }
     }
+    isRedrawing = false;
   };
 
   process.stdout.write('\x1b[2J');

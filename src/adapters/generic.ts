@@ -145,11 +145,20 @@ export class GenericAgentAdapter implements IAgentAdapter {
 
   async isRunning(): Promise<boolean> {
     try {
+      // Escape regex metacharacters so commandName is matched literally,
+      // then require it to appear as a whole word (space/slash before and after).
+      const escaped = this.config.commandName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`(?:^|[\\s/])${escaped}(?:\\s|$)`);
+      const ownPid = String(process.pid);
       const output = execFileSync('ps', ['aux'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      return output.split('\n').some(
-        line => new RegExp(`\\b${this.config.commandName}\\b`).test(line) &&
-                !line.includes('grep') && !line.includes('macc')
-      );
+      return output.split('\n').some(line => {
+        if (!pattern.test(line)) return false;
+        if (line.includes('grep') || line.includes('macc')) return false;
+        // ps aux: USER PID %CPU %MEM ... COMMAND — PID is column index 1
+        const pid = line.trimStart().split(/\s+/)[1];
+        if (pid === ownPid) return false;
+        return true;
+      });
     } catch {
       return false;
     }

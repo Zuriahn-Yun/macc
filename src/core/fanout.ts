@@ -86,10 +86,13 @@ Return ONLY valid JSON matching: { "summary": "...", "nextStep": "...", "combine
 // Uses the adapter's buildNonInteractiveArgs to get the right flags per CLI.
 // ---------------------------------------------------------------------------
 
+const DEFAULT_SUBAGENT_TIMEOUT_MS = 5 * 60 * 1_000; // 5 minutes
+
 async function runSubagent(
   commandName: string,
   args: string[],
   index: number,
+  timeoutMs = DEFAULT_SUBAGENT_TIMEOUT_MS,
 ): Promise<{ title: string; output: string; elapsed: number }> {
   const start = Date.now();
 
@@ -100,11 +103,22 @@ async function runSubagent(
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`Subagent ${index + 1} timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
 
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
 
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       const elapsed = Date.now() - start;
       if (code !== 0 && !stdout) {
         reject(new Error(`Subagent ${index + 1} exited ${code}: ${stderr.slice(0, 200)}`));
@@ -113,7 +127,12 @@ async function runSubagent(
       }
     });
 
-    child.on('error', reject);
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -122,7 +141,8 @@ async function runSubagent(
 // ---------------------------------------------------------------------------
 
 export interface FanOutOptions {
-  count: number;  // number of parallel subagents (default 3)
+  count: number;       // number of parallel subagents (default 3)
+  timeoutMs?: number;  // per-subagent timeout in ms (default 5 minutes)
 }
 
 export async function fanOut(
@@ -130,7 +150,8 @@ export async function fanOut(
   backend: IModelBackend,
   opts: FanOutOptions,
 ): Promise<void> {
-  const { count } = opts;
+  const { timeoutMs } = opts;
+  const count = Math.min(Math.max(Math.floor(opts.count), 1), 10);
   const commandName = source.commandName;
 
   // 1. Extract current session context
@@ -177,7 +198,7 @@ export async function fanOut(
   const settled = await Promise.allSettled(
     subtasks.map((t, i) => {
       const subArgs = source.buildNonInteractiveArgs?.(t.prompt) ?? ['--print', t.prompt];
-      return runSubagent(commandName, subArgs, i);
+      return runSubagent(commandName, subArgs, i, timeoutMs);
     })
   );
   clearInterval(spinner);
