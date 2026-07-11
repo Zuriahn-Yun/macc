@@ -139,6 +139,90 @@ describe('OpenAIBackend', () => {
     expect((capturedMessages[1] as { role: string }).role).toBe('user');
   });
 
+  // --- error paths ---
+
+  it('stream rethrows 401 errors without wrapping in CreditsExhaustedError', async () => {
+    process.env.OPENAI_API_KEY = 'sk-expired';
+    const authError = Object.assign(new Error('Incorrect API key provided'), { status: 401 });
+    mockChatCreate.mockRejectedValue(authError);
+
+    const { OpenAIBackend } = await import('./openai.js');
+    const backend = new OpenAIBackend('gpt-4o');
+
+    const err = await backend.stream(
+      [{ role: 'user', content: 'hi', timestamp: new Date() }], 'sys', () => {}
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.constructor.name).not.toBe('CreditsExhaustedError');
+    expect(err.status).toBe(401);
+  });
+
+  it('stream throws CreditsExhaustedError on 402 response', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    const quotaError = Object.assign(new Error('You exceeded your current quota'), { status: 402 });
+    mockChatCreate.mockRejectedValue(quotaError);
+
+    const { OpenAIBackend } = await import('./openai.js');
+    const { CreditsExhaustedError } = await import('../utils/errors.js');
+    const backend = new OpenAIBackend('gpt-4o');
+
+    const err = await backend.stream(
+      [{ role: 'user', content: 'hi', timestamp: new Date() }], 'sys', () => {}
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(CreditsExhaustedError);
+    expect((err as InstanceType<typeof CreditsExhaustedError>).provider).toBe('openai');
+  });
+
+  it('stream throws CreditsExhaustedError when message contains quota text (no status code)', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    const quotaError = new Error('You exceeded your current quota, please check your plan and billing details');
+    mockChatCreate.mockRejectedValue(quotaError);
+
+    const { OpenAIBackend } = await import('./openai.js');
+    const { CreditsExhaustedError } = await import('../utils/errors.js');
+    const backend = new OpenAIBackend('gpt-4o');
+
+    const err = await backend.stream(
+      [{ role: 'user', content: 'hi', timestamp: new Date() }], 'sys', () => {}
+    ).catch(e => e);
+
+    expect(err).toBeInstanceOf(CreditsExhaustedError);
+  });
+
+  it('stream rethrows generic network errors as-is', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    const networkError = new Error('connect ECONNREFUSED 127.0.0.1:443');
+    mockChatCreate.mockRejectedValue(networkError);
+
+    const { OpenAIBackend } = await import('./openai.js');
+    const backend = new OpenAIBackend('gpt-4o');
+
+    const err = await backend.stream(
+      [{ role: 'user', content: 'hi', timestamp: new Date() }], 'sys', () => {}
+    ).catch(e => e);
+
+    expect(err.message).toContain('ECONNREFUSED');
+    expect(err.constructor.name).not.toBe('CreditsExhaustedError');
+  });
+
+  it('quota-detection regex does not misfire on rate-limit messages', async () => {
+    process.env.OPENAI_API_KEY = 'sk-test';
+    const rateLimitError = Object.assign(new Error('Rate limit reached for gpt-4o — please try again in 60s'), { status: 429 });
+    mockChatCreate.mockRejectedValue(rateLimitError);
+
+    const { OpenAIBackend } = await import('./openai.js');
+    const { CreditsExhaustedError } = await import('../utils/errors.js');
+    const backend = new OpenAIBackend('gpt-4o');
+
+    const err = await backend.stream(
+      [{ role: 'user', content: 'hi', timestamp: new Date() }], 'sys', () => {}
+    ).catch(e => e);
+
+    expect(err).not.toBeInstanceOf(CreditsExhaustedError);
+  });
+
   it('stream handles empty delta content without throwing', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
     const chunks = [

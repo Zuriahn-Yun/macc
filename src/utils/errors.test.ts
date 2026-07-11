@@ -3,6 +3,8 @@ import {
   isCreditsExhaustedOutput,
   detectExitReason,
   parseResetTime,
+  printCreditsExhaustedNoTarget,
+  printNoTargetAvailable,
 } from './errors.js';
 
 // Silence chalk output from print* helpers — tested separately via spies where needed.
@@ -213,5 +215,51 @@ describe('parseResetTime', () => {
     const result = parseResetTime('Last reset was 2025-06-15T10:00:00Z');
     // 10:00 UTC is before our 14:00 UTC fake time → should be null
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// credits-exhausted with no fallback agent
+// ---------------------------------------------------------------------------
+
+describe('credits-exhausted with no fallback agent', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  function calls(): string {
+    return (consoleSpy.mock.calls as unknown[][]).map(c => c.join('')).join('\n');
+  }
+
+  it('printCreditsExhaustedNoTarget surfaces a clear error and does not throw', () => {
+    expect(() => printCreditsExhaustedNoTarget('claude-code')).not.toThrow();
+    expect(calls()).toContain('claude-code');
+    expect(calls()).toContain('Credits exhausted');
+  });
+
+  it('printCreditsExhaustedNoTarget suggests adding another provider', () => {
+    printCreditsExhaustedNoTarget('gemini-cli');
+    expect(calls()).toMatch(/macc agent add/i);
+  });
+
+  it('printNoTargetAvailable surfaces a clear error and does not throw', () => {
+    expect(() => printNoTargetAvailable('claude-code')).not.toThrow();
+    expect(calls()).toContain('claude-code');
+  });
+
+  it('detectExitReason correctly routes common credit-exhaustion patterns', () => {
+    // These are the messages that trigger the no-fallback path in the orchestrator.
+    expect(detectExitReason('Error: insufficient_quota — please add a payment method')).toBe('credits-exhausted');
+    expect(detectExitReason('Your credit balance is too low to make this request')).toBe('credits-exhausted');
+    expect(detectExitReason('You exceeded your current quota, please check your plan and billing details')).toBe('credits-exhausted');
+    // Rate-limit messages must NOT be misclassified as credits-exhausted.
+    expect(detectExitReason('Rate limit reached — please try again in 60 seconds')).not.toBe('credits-exhausted');
   });
 });
