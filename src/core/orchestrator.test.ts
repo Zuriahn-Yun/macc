@@ -236,6 +236,33 @@ describe('watchAll', () => {
     await watchPromise;
   });
 
+  it('resolves instead of hanging when triggerHandoff throws', async () => {
+    const { watchAll } = await import('./orchestrator.js');
+
+    // Source adapter at 100% so watchAll fires triggerHandoff immediately.
+    const source = makeAdapter('claude-code', 100);
+    vi.mocked(source.getUsageSnapshot).mockResolvedValue({
+      agentId: 'claude-code',
+      isRunning: true,
+      contextUsedPercent: 100,
+      inputTokensUsed: 200_000,
+      contextWindowTokens: 200_000,
+    });
+    // Force extractSessionContext to throw so triggerHandoff propagates an error.
+    vi.mocked(source.extractSessionContext).mockRejectedValue(new Error('simulated disk error'));
+
+    // A second installed adapter so otherTargets is non-empty (reaches extractSessionContext).
+    const target = makeAdapter('gemini-cli', 0);
+
+    // Before the fix this would hang forever; after the fix it resolves.
+    await expect(
+      watchAll(
+        [{ adapter: source, installed: true }, { adapter: target, installed: true }],
+        [makeBackend()],
+      )
+    ).resolves.toBeUndefined();
+  });
+
   it('prints not-installed row without calling getUsageSnapshot', async () => {
     const { watchAll } = await import('./orchestrator.js');
     const { printAgentRow } = await import('../utils/display.js');

@@ -431,8 +431,14 @@ export async function watchAll(
           console.log('');
           printWarning(snap.contextUsedPercent, snap.inputTokensUsed, snap.contextWindowTokens);
           const otherTargets = installed.filter(a => a.id !== adapter.id);
-          await triggerHandoff(adapter, otherTargets, compressBackends);
-          signalDone?.();
+          try {
+            await triggerHandoff(adapter, otherTargets, compressBackends);
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(chalk.red(`\n  Auto-handoff failed: ${msg}\n`));
+          } finally {
+            signalDone?.();
+          }
           return;
         }
 
@@ -446,9 +452,12 @@ export async function watchAll(
     isRedrawing = false;
   };
 
+  // Declare before redraw so clearInterval(poll) inside the first redraw() call
+  // sees an initialized variable (undefined) rather than the TDZ.
+  let poll: ReturnType<typeof setInterval>;
   process.stdout.write('\x1b[2J');
   await redraw();
-  const poll = setInterval(redraw, POLL_INTERVAL_MS);
+  poll = setInterval(redraw, POLL_INTERVAL_MS);
 
   await Promise.race([
     donePromise,
