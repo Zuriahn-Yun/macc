@@ -223,6 +223,7 @@ describe('parseResetTime', () => {
 // ---------------------------------------------------------------------------
 
 describe('credits-exhausted with no fallback agent', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let consoleSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -233,23 +234,24 @@ describe('credits-exhausted with no fallback agent', () => {
     consoleSpy.mockRestore();
   });
 
+  function calls(): string {
+    return (consoleSpy.mock.calls as unknown[][]).map(c => c.join('')).join('\n');
+  }
+
   it('printCreditsExhaustedNoTarget surfaces a clear error and does not throw', () => {
     expect(() => printCreditsExhaustedNoTarget('claude-code')).not.toThrow();
-    const output = consoleSpy.mock.calls.map(c => c.join('')).join('\n');
-    expect(output).toContain('claude-code');
-    expect(output).toContain('Credits exhausted');
+    expect(calls()).toContain('claude-code');
+    expect(calls()).toContain('Credits exhausted');
   });
 
   it('printCreditsExhaustedNoTarget suggests adding another provider', () => {
     printCreditsExhaustedNoTarget('gemini-cli');
-    const output = consoleSpy.mock.calls.map(c => c.join('')).join('\n');
-    expect(output).toMatch(/macc agent add/i);
+    expect(calls()).toMatch(/macc agent add/i);
   });
 
   it('printNoTargetAvailable surfaces a clear error and does not throw', () => {
     expect(() => printNoTargetAvailable('claude-code')).not.toThrow();
-    const output = consoleSpy.mock.calls.map(c => c.join('')).join('\n');
-    expect(output).toContain('claude-code');
+    expect(calls()).toContain('claude-code');
   });
 
   it('detectExitReason correctly routes common credit-exhaustion patterns', () => {
